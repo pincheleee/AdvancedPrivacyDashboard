@@ -4,7 +4,8 @@ struct ThreatDetectionView: View {
     @State private var scanProgress: Double = 0.0
     @State private var isScanning: Bool = false
     @State private var threats: [Threat] = []
-    
+    @State private var scanTimer: Timer?
+
     var body: some View {
         VStack(spacing: 20) {
             headerSection
@@ -18,6 +19,10 @@ struct ThreatDetectionView: View {
             threatsList
         }
         .padding()
+        .onDisappear {
+            scanTimer?.invalidate()
+            scanTimer = nil
+        }
     }
     
     private var headerSection: some View {
@@ -112,13 +117,17 @@ struct ThreatDetectionView: View {
     private func startScan() {
         isScanning = true
         scanProgress = 0.0
-        
+
+        // Invalidate any existing timer
+        scanTimer?.invalidate()
+
         // Simulate scanning progress
-        Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { timer in
+        scanTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [self] timer in
             if scanProgress < 1.0 {
                 scanProgress += 0.01
             } else {
                 timer.invalidate()
+                scanTimer = nil
                 isScanning = false
             }
         }

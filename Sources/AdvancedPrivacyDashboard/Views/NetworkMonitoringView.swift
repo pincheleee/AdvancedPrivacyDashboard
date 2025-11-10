@@ -35,7 +35,7 @@ struct NetworkMonitoringView: View {
                         Text("No security threats detected")
                             .foregroundColor(.secondary)
                     } else {
-                        ForEach(securityThreats, id: \.timestamp) { threat in
+                        ForEach(securityThreats) { threat in
                             SecurityThreatView(threat: threat)
                         }
                     }

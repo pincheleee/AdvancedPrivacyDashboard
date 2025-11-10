@@ -20,15 +20,11 @@ class NetworkService: ObservableObject {
     }
     
     private func setupPathMonitor() {
-        do {
-            pathMonitor = NWPathMonitor()
-            pathMonitor?.pathUpdateHandler = { [weak self] path in
-                DispatchQueue.main.async {
-                    self?.handlePathUpdate(path)
-                }
+        pathMonitor = NWPathMonitor()
+        pathMonitor?.pathUpdateHandler = { [weak self] path in
+            DispatchQueue.main.async {
+                self?.handlePathUpdate(path)
             }
-        } catch {
-            self.error = .pathMonitorSetupFailed(error.localizedDescription)
         }
     }
     
@@ -60,18 +56,14 @@ class NetworkService: ObservableObject {
     }
     
     func startMonitoring() {
-        do {
-            pathMonitor?.start(queue: DispatchQueue.global(qos: .utility))
-            
-            networkMonitor.startMonitoring { [weak self] stats in
-                self?.updateNetworkStats(stats)
-            }
-            
-            // Clear any previous errors
-            error = nil
-        } catch {
-            self.error = .monitoringStartFailed(error.localizedDescription)
+        pathMonitor?.start(queue: DispatchQueue.global(qos: .utility))
+
+        networkMonitor.startMonitoring { [weak self] stats in
+            self?.updateNetworkStats(stats)
         }
+
+        // Clear any previous errors
+        error = nil
     }
     
     func stopMonitoring() {
@@ -137,11 +129,11 @@ enum NetworkStatus {
     }
 }
 
-enum NetworkInterface {
+enum NetworkInterface: Hashable {
     case wifi
     case cellular
     case ethernet
-    
+
     var name: String {
         switch self {
         case .wifi: return "Wi-Fi"
@@ -149,7 +141,7 @@ enum NetworkInterface {
         case .ethernet: return "Ethernet"
         }
     }
-    
+
     var icon: String {
         switch self {
         case .wifi: return "wifi"
@@ -163,12 +155,14 @@ struct NetworkStats {
     var downloadSpeed: Double = 0.0 // MB/s
     var uploadSpeed: Double = 0.0 // MB/s
     var activeConnectionsCount: Int = 0
+    var totalBytesReceived: UInt64 = 0
+    var totalBytesSent: UInt64 = 0
     var activeInterfaces: [NetworkInterface] = []
-    
+
     var formattedDownloadSpeed: String {
         String(format: "%.1f MB/s", downloadSpeed)
     }
-    
+
     var formattedUploadSpeed: String {
         String(format: "%.1f MB/s", uploadSpeed)
     }

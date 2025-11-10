@@ -5,14 +5,16 @@ import NetworkExtension
 class NetworkMonitor {
     typealias StatsUpdateHandler = (NetworkStats) -> Void
     
-    struct SecurityThreat {
+    struct SecurityThreat: Identifiable {
+        let id = UUID()
+
         enum ThreatType {
             case suspiciousConnection
             case unusualTraffic
             case potentialMalware
             case dataLeakage
         }
-        
+
         let type: ThreatType
         let description: String
         let severity: Int // 1-5, with 5 being most severe
@@ -28,10 +30,11 @@ class NetworkMonitor {
     private var bytesSent: UInt64 = 0
     private var lastUpdateTime: Date = Date()
     private var securityThreats: [SecurityThreat] = []
-    
+
     // Store timers to prevent memory leaks
-    private var statsTimer: Timer?
-    private var performanceTimer: Timer?
+    private var statsTimer: DispatchSourceTimer?
+    private var performanceTimer: DispatchSourceTimer?
+    private let monitorQueue = DispatchQueue(label: "com.privacy.networkmonitor", qos: .utility)
     
     func startMonitoring(updateHandler: @escaping StatsUpdateHandler) {
         self.updateHandler = updateHandler
@@ -45,11 +48,11 @@ class NetworkMonitor {
         pathMonitor = nil
         connections.forEach { $0.cancel() }
         connections.removeAll()
-        
-        // Invalidate timers to prevent memory leaks
-        statsTimer?.invalidate()
+
+        // Cancel timers to prevent memory leaks
+        statsTimer?.cancel()
         statsTimer = nil
-        performanceTimer?.invalidate()
+        performanceTimer?.cancel()
         performanceTimer = nil
     }
     
@@ -69,28 +72,36 @@ class NetworkMonitor {
     }
     
     private func startConnectionMonitoring() {
-        // Invalidate existing timer if any
-        statsTimer?.invalidate()
-        
+        // Cancel existing timer if any
+        statsTimer?.cancel()
+
         // In a real implementation, we would:
         // 1. Use Network.framework to monitor active connections
         // 2. Track data transfer for each connection
         // 3. Analyze traffic patterns
-        
+
         // For now, we'll simulate some basic monitoring
-        statsTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+        let timer = DispatchSource.makeTimerSource(queue: monitorQueue)
+        timer.schedule(deadline: .now(), repeating: 1.0)
+        timer.setEventHandler { [weak self] in
             self?.updateNetworkStats()
         }
+        timer.resume()
+        statsTimer = timer
     }
     
     private func startPerformanceMonitoring() {
-        // Invalidate existing timer if any
-        performanceTimer?.invalidate()
-        
+        // Cancel existing timer if any
+        performanceTimer?.cancel()
+
         // Monitor network performance metrics
-        performanceTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
+        let timer = DispatchSource.makeTimerSource(queue: monitorQueue)
+        timer.schedule(deadline: .now(), repeating: 5.0)
+        timer.setEventHandler { [weak self] in
             self?.checkPerformance()
         }
+        timer.resume()
+        performanceTimer = timer
     }
     
     private func updateNetworkStats() {
@@ -132,7 +143,9 @@ class NetworkMonitor {
                 sourceIP: "192.168.1.\(Int.random(in: 2...254))",
                 destinationIP: "203.0.113.\(Int.random(in: 2...254))"
             )
-            securityThreats.append(threat)
+            monitorQueue.async { [weak self] in
+                self?.securityThreats.append(threat)
+            }
         }
     }
     
@@ -141,23 +154,8 @@ class NetworkMonitor {
         // 1. Analyze traffic patterns
         // 2. Check for known malicious IPs
         // 3. Monitor for unusual behavior
-        return securityThreats
-    }
-}
-
-struct NetworkStats {
-    var downloadSpeed: Double // in MB/s
-    var uploadSpeed: Double // in MB/s
-    var activeConnectionsCount: Int
-    var totalBytesReceived: UInt64
-    var totalBytesSent: UInt64
-    var activeInterfaces: [NetworkInterface] = []
-    
-    var formattedDownloadSpeed: String {
-        String(format: "%.1f MB/s", downloadSpeed)
-    }
-    
-    var formattedUploadSpeed: String {
-        String(format: "%.1f MB/s", uploadSpeed)
+        return monitorQueue.sync {
+            return securityThreats
+        }
     }
 } 
