@@ -1,10 +1,10 @@
-// swift-tools-version:5.5
+// swift-tools-version:5.9
 import PackageDescription
 
 let package = Package(
     name: "AdvancedPrivacyDashboard",
     platforms: [
-        .macOS(.v12)
+        .macOS(.v13)
     ],
     products: [
         .executable(
@@ -20,9 +20,5 @@ let package = Package(
             name: "AdvancedPrivacyDashboard",
             dependencies: []
         ),
-        .testTarget(
-            name: "AdvancedPrivacyDashboardTests",
-            dependencies: ["AdvancedPrivacyDashboard"]
-        )
     ]
 ) 
