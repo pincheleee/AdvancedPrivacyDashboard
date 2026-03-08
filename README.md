@@ -20,10 +20,11 @@ A comprehensive macOS application for real-time privacy monitoring, network anal
 - Query statistics and top domains
 
 ### Threat Detection
-- System security scanning (SIP status, Gatekeeper, SSH)
-- Real-time threat notifications
+- Full system security scanning via ScanService (8 real checks: SIP, Gatekeeper, FileVault, SSH, Firewall, suspicious connections, world-writable paths, screen lock)
+- Real-time threat notifications (scan complete alerts via NotificationManager)
 - Threat history log with severity tracking
 - Suspicious port connection analysis
+- Live scan results displayed in ThreatDetectionView (replaces simulated scanning)
 
 ### Firewall Management
 - Real macOS firewall status (`socketfilterfw`)
@@ -32,7 +33,9 @@ A comprehensive macOS application for real-time privacy monitoring, network anal
 - Firewall event log viewer
 
 ### Data Breach Checking
-- Email breach lookup (HIBP API pattern, demo mode)
+- Real HIBP v3 API integration with k-anonymity (SHA-1 prefix range queries)
+- API key input UI in BreachCheckView
+- Demo fallback mode when no API key is configured
 - Breach severity ratings and exposed data type tags
 - Monitored email persistence
 - Security recommendations
@@ -51,7 +54,7 @@ A comprehensive macOS application for real-time privacy monitoring, network anal
 ### macOS Widget
 - Small widget: security status at a glance
 - Medium widget: network, VPN, firewall, traffic stats
-- Shared data via App Group
+- Shared data via App Group (WidgetDataWriter publishes to UserDefaults every 30s)
 
 ### Settings
 - All settings persisted to SQLite
@@ -102,19 +105,20 @@ AdvancedPrivacyDashboard/
     NetworkTrafficData.swift
   Services/
     BlocklistImporter.swift     # Community blocklist import
-    BreachCheckService.swift    # HIBP-pattern breach checking
+    BreachCheckService.swift    # HIBP v3 breach checking (k-anonymity)
     DNSMonitorService.swift     # DNS query monitoring
     ExportService.swift         # CSV/report export
     FirewallService.swift       # macOS firewall integration
     GeoIPService.swift          # IP geolocation (ip-api.com)
     NetworkMonitor.swift        # Real network byte counters
     NetworkService.swift        # Network state management
-    NotificationManager.swift   # UNUserNotificationCenter
+    NotificationManager.swift   # UNUserNotificationCenter (scan alerts)
     PersistenceManager.swift    # SQLite persistence layer
+    ScanService.swift           # 8 real system security checks
     SystemCommandRunner.swift   # Shell command helper
     UpdateChecker.swift         # GitHub releases update check
     VPNDetector.swift           # VPN interface detection
-    WidgetDataWriter.swift      # App Group shared data
+    WidgetDataWriter.swift      # App Group shared data (30s interval)
   Views/
     BreachCheckView.swift
     ContentView.swift           # Sidebar + keyboard shortcuts
