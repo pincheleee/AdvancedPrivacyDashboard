@@ -28,5 +28,10 @@
     <string>Copyright 2026. All rights reserved.</string>
     <key>LSUIElement</key>
     <false/>
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsArbitraryLoads</key>
+        <true/>
+    </dict>
 </dict>
 </plist>

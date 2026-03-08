@@ -120,6 +120,7 @@ class NetworkService: ObservableObject {
             guard cols.count >= 9 else { continue }
 
             let processName = String(cols[0])
+            let pid = String(cols[1])
             let type = String(cols[7])  // TCP or UDP
             let nameField = String(cols.last ?? "")
 
@@ -127,6 +128,12 @@ class NetworkService: ObservableObject {
 
             let parts = nameField.components(separatedBy: "->")
             guard parts.count == 2 else { continue }
+
+            // Parse local address
+            let localRaw = parts[0].replacingOccurrences(of: " ", with: "")
+            let localAddrParts = localRaw.split(separator: ":")
+            let localPort = localAddrParts.count > 1 ? Int(localAddrParts.last ?? "") ?? 0 : 0
+            let localAddr = localAddrParts.dropLast().joined(separator: ":")
 
             let remote = parts[1].replacingOccurrences(of: " ", with: "")
             let statusSuffix = remote.components(separatedBy: "(")
@@ -149,7 +156,10 @@ class NetworkService: ObservableObject {
                 port: port,
                 protocol: type,
                 status: status,
-                processName: processName
+                processName: processName,
+                pid: pid,
+                localAddress: localAddr,
+                localPort: localPort
             ))
         }
 
@@ -212,6 +222,10 @@ struct NetworkConnection: Identifiable {
     let `protocol`: String
     let status: String
     var processName: String = ""
+    var pid: String = ""
+    var localAddress: String = ""
+    var localPort: Int = 0
+    var firstSeen: Date = Date()
 }
 
 enum NetworkError: Error, Identifiable {

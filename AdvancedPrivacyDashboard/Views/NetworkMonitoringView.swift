@@ -9,6 +9,7 @@ struct NetworkMonitoringView: View {
     @State private var threatUpdateTimer: Timer?
     @State private var trafficPersistTimer: Timer?
     @State private var searchText = ""
+    @State private var selectedConnection: NetworkConnection?
 
     var filteredConnections: [NetworkConnection] {
         if searchText.isEmpty {
@@ -57,7 +58,7 @@ struct NetworkMonitoringView: View {
                                 .font(.caption)
                                 .padding(.horizontal, 8)
                                 .padding(.vertical, 4)
-                                .background(Capsule().fill(Color.blue.opacity(0.1)))
+                                .background(Capsule().fill(Color.accentColor.opacity(0.1)))
                         }
                     }
                 }
@@ -75,7 +76,7 @@ struct NetworkMonitoringView: View {
                 }
                 .padding()
                 .background(RoundedRectangle(cornerRadius: 12)
-                    .fill(Color(NSColor.controlBackgroundColor)))
+                    .fill(.ultraThinMaterial))
 
                 // Connections list
                 VStack(alignment: .leading, spacing: 12) {
@@ -141,12 +142,27 @@ struct NetworkMonitoringView: View {
                             }
                             .padding(.horizontal, 8)
                             .padding(.vertical, 3)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                selectedConnection = conn
+                            }
+                            .background(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .fill(Color.primary.opacity(0.001))
+                            )
+                            .onHover { hovering in
+                                if hovering {
+                                    NSCursor.pointingHand.push()
+                                } else {
+                                    NSCursor.pop()
+                                }
+                            }
                         }
                     }
                 }
                 .padding()
                 .background(RoundedRectangle(cornerRadius: 12)
-                    .fill(Color(NSColor.controlBackgroundColor)))
+                    .fill(.ultraThinMaterial))
 
                 // Security threats
                 VStack(alignment: .leading, spacing: 12) {
@@ -169,11 +185,17 @@ struct NetworkMonitoringView: View {
                 }
                 .padding()
                 .background(RoundedRectangle(cornerRadius: 12)
-                    .fill(Color(NSColor.controlBackgroundColor)))
+                    .fill(.ultraThinMaterial))
             }
             .padding()
         }
+        .sheet(item: $selectedConnection) { conn in
+            ConnectionDetailSheet(connection: conn, geoIPResult: geoIPService.cache[conn.destination])
+        }
         .onAppear {
+            // Load persisted traffic history from the last 2 hours
+            networkService.trafficHistory.loadFromPersistence()
+
             networkService.startMonitoring()
             vpnDetector.startMonitoring()
             updateSecurityThreats()
@@ -189,6 +211,11 @@ struct NetworkMonitoringView: View {
             }
         }
         .onDisappear {
+            // Persist final data point before leaving
+            PersistenceManager.shared.saveTrafficDataPoint(
+                download: networkService.networkStats.downloadSpeed,
+                upload: networkService.networkStats.uploadSpeed
+            )
             networkService.stopMonitoring()
             vpnDetector.stopMonitoring()
             threatUpdateTimer?.invalidate()
@@ -320,6 +347,177 @@ struct NetworkMonitoringView: View {
         }
         .padding()
         .background(RoundedRectangle(cornerRadius: 8).fill(Color.red.opacity(0.15)))
+    }
+}
+
+// MARK: - Connection Detail Sheet
+
+struct ConnectionDetailSheet: View {
+    let connection: NetworkConnection
+    let geoIPResult: GeoIPService.GeoIPResult?
+    @Environment(\.dismiss) private var dismiss
+    @State private var copiedIP = false
+
+    private var connectionDuration: String {
+        let interval = Date().timeIntervalSince(connection.firstSeen)
+        if interval < 60 {
+            return "\(Int(interval))s"
+        } else if interval < 3600 {
+            return "\(Int(interval / 60))m \(Int(interval.truncatingRemainder(dividingBy: 60)))s"
+        } else {
+            let hours = Int(interval / 3600)
+            let mins = Int((interval.truncatingRemainder(dividingBy: 3600)) / 60)
+            return "\(hours)h \(mins)m"
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Header
+            HStack {
+                Image(systemName: "network")
+                    .font(.title2)
+                    .foregroundColor(.accentColor)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(connection.processName)
+                        .font(.headline)
+                    Text("PID \(connection.pid)")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                Spacer()
+                Text(connection.status)
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Capsule().fill(statusColor(connection.status).opacity(0.15)))
+                    .foregroundColor(statusColor(connection.status))
+            }
+            .padding()
+
+            Divider()
+
+            // Connection details grid
+            VStack(alignment: .leading, spacing: 16) {
+                detailSection(title: "Connection") {
+                    detailRow(label: "Protocol", value: connection.protocol)
+                    detailRow(label: "State", value: connection.status)
+                    detailRow(label: "Duration", value: connectionDuration)
+                }
+
+                detailSection(title: "Local") {
+                    detailRow(label: "Address", value: connection.localAddress.isEmpty ? "--" : connection.localAddress)
+                    detailRow(label: "Port", value: connection.localPort > 0 ? "\(connection.localPort)" : "--")
+                }
+
+                detailSection(title: "Remote") {
+                    HStack {
+                        detailRow(label: "Address", value: connection.destination.isEmpty ? "--" : connection.destination)
+                        Spacer()
+                        Button {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(connection.destination, forType: .string)
+                            copiedIP = true
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                                copiedIP = false
+                            }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: copiedIP ? "checkmark" : "doc.on.doc")
+                                Text(copiedIP ? "Copied" : "Copy IP")
+                            }
+                            .font(.caption)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
+                    detailRow(label: "Port", value: "\(connection.port)")
+                }
+
+                // GeoIP section
+                if let geo = geoIPResult, geo.status == "success" {
+                    detailSection(title: "GeoIP") {
+                        if let country = geo.country {
+                            detailRow(label: "Country", value: "\(geo.flagEmoji) \(country)")
+                        }
+                        if let city = geo.city, !city.isEmpty {
+                            detailRow(label: "City", value: city)
+                        }
+                        if let region = geo.regionName, !region.isEmpty {
+                            detailRow(label: "Region", value: region)
+                        }
+                        if let isp = geo.isp, !isp.isEmpty {
+                            detailRow(label: "ISP", value: isp)
+                        }
+                        if let org = geo.org, !org.isEmpty {
+                            detailRow(label: "Org", value: org)
+                        }
+                        if let asn = geo.as, !asn.isEmpty {
+                            detailRow(label: "AS", value: asn)
+                        }
+                        if let tz = geo.timezone, !tz.isEmpty {
+                            detailRow(label: "Timezone", value: tz)
+                        }
+                    }
+                }
+            }
+            .padding()
+
+            Spacer()
+
+            // Close button
+            HStack {
+                Spacer()
+                Button("Close") {
+                    dismiss()
+                }
+                .keyboardShortcut(.cancelAction)
+                .buttonStyle(.bordered)
+            }
+            .padding()
+        }
+        .frame(width: 420, height: 520)
+    }
+
+    private func detailSection(title: String, @ViewBuilder content: () -> some View) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.subheadline)
+                .fontWeight(.semibold)
+                .foregroundColor(.secondary)
+            VStack(alignment: .leading, spacing: 6) {
+                content()
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(.ultraThinMaterial)
+            )
+        }
+    }
+
+    private func detailRow(label: String, value: String) -> some View {
+        HStack {
+            Text(label)
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .frame(width: 70, alignment: .leading)
+            Text(value)
+                .font(.system(.caption, design: .monospaced))
+                .foregroundColor(.primary)
+                .textSelection(.enabled)
+        }
+    }
+
+    private func statusColor(_ status: String) -> Color {
+        switch status {
+        case "ESTABLISHED": return .green
+        case "LISTEN": return .blue
+        case "CLOSE_WAIT", "TIME_WAIT": return .yellow
+        default: return .gray
+        }
     }
 }
 

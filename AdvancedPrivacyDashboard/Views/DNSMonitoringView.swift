@@ -274,8 +274,7 @@ struct DNSMonitoringView: View {
             loadPersistedBlocklist()
             refreshHistoricalStats()
         }
-        .onReceive(dnsService.$recentQueries) { queries in
-            persistNewQueries(queries)
+        .onReceive(dnsService.$recentQueries) { _ in
             refreshHistoricalStats()
         }
         .onReceive(blocklistImporter.$lastImportCount) { count in
@@ -302,19 +301,6 @@ struct DNSMonitoringView: View {
         historicalTotal = counts.total
         historicalBlocked = counts.blocked
         historicalSuspicious = counts.suspicious
-    }
-
-    private func persistNewQueries(_ queries: [DNSQuery]) {
-        // Persist only the most recent query to avoid duplicating entire history on every update
-        guard let latest = queries.first else { return }
-        PersistenceManager.shared.logDNSQuery(
-            domain: latest.domain,
-            queryType: latest.queryType,
-            responseIP: latest.responseIP,
-            process: latest.process,
-            isBlocked: latest.isBlocked,
-            isSuspicious: latest.isSuspicious
-        )
     }
 
     // MARK: - Blocklist Sheet

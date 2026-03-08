@@ -4,6 +4,8 @@ struct BreachCheckView: View {
     @StateObject private var breachService = BreachCheckService()
     @State private var emailInput = ""
     @State private var animateResults = false
+    @State private var hibpKeyInput = ""
+    @State private var lastCheckedEmail = ""
 
     var body: some View {
         ScrollView {
@@ -20,17 +22,57 @@ struct BreachCheckView: View {
                     Spacer()
                 }
 
-                // HIBP API note
-                HStack(spacing: 8) {
-                    Image(systemName: "info.circle")
-                        .foregroundColor(.blue)
-                    Text("Demo mode -- configure HIBP API key in Settings for real breach data")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                // HIBP API key configuration
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) {
+                        Image(systemName: breachService.apiKey.isEmpty ? "info.circle" : "checkmark.circle.fill")
+                            .foregroundColor(breachService.apiKey.isEmpty ? .blue : .green)
+                        Text(breachService.apiKey.isEmpty
+                             ? "Enter your HIBP API key for real breach data (get one at haveibeenpwned.com/API/Key)"
+                             : "HIBP API key configured -- real breach lookups enabled")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+
+                    HStack(spacing: 8) {
+                        SecureField("HIBP API Key...", text: $hibpKeyInput)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(maxWidth: 360)
+                            .onAppear { hibpKeyInput = breachService.apiKey }
+                        Button(breachService.apiKey.isEmpty ? "Save" : "Update") {
+                            breachService.saveAPIKey(hibpKeyInput)
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(hibpKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                        if !breachService.apiKey.isEmpty {
+                            Button("Clear") {
+                                hibpKeyInput = ""
+                                breachService.saveAPIKey("")
+                            }
+                            .buttonStyle(.borderless)
+                            .foregroundColor(.red)
+                            .font(.caption)
+                        }
+                    }
                 }
                 .padding(10)
                 .background(RoundedRectangle(cornerRadius: 8)
                     .fill(Color.blue.opacity(0.06)))
+
+                // Error / info message from service
+                if let errorMsg = breachService.errorMessage {
+                    HStack(spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundColor(.orange)
+                        Text(errorMsg)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    .padding(10)
+                    .background(RoundedRectangle(cornerRadius: 8)
+                        .fill(Color.orange.opacity(0.06)))
+                }
 
                 // Search bar
                 HStack {
@@ -189,32 +231,33 @@ struct BreachCheckView: View {
                 }
             }
         }
+        .onReceive(breachService.$isLoading) { loading in
+            // When loading finishes, animate results in and persist
+            guard !loading, breachService.status.lastChecked != nil else { return }
+            withAnimation { animateResults = true }
+
+            let email = lastCheckedEmail
+            if !breachService.breaches.isEmpty && !email.isEmpty {
+                for breach in breachService.breaches {
+                    PersistenceManager.shared.saveBreachResult(email: email, breach: breach)
+                }
+                NotificationManager.shared.sendBreachAlert(
+                    email: email,
+                    breachCount: breachService.breaches.count
+                )
+            }
+        }
     }
 
     private func checkEmail() {
         guard !emailInput.isEmpty else { return }
         animateResults = false
+        lastCheckedEmail = emailInput
 
         // Persist the monitored email
         PersistenceManager.shared.saveMonitoredEmail(emailInput)
 
-        let emailToCheck = emailInput
-        breachService.checkEmail(emailToCheck)
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) {
-            withAnimation { animateResults = true }
-
-            // Persist breach results and send notification if breaches found
-            if !breachService.breaches.isEmpty {
-                for breach in breachService.breaches {
-                    PersistenceManager.shared.saveBreachResult(email: emailToCheck, breach: breach)
-                }
-                NotificationManager.shared.sendBreachAlert(
-                    email: emailToCheck,
-                    breachCount: breachService.breaches.count
-                )
-            }
-        }
+        breachService.checkEmail(emailInput)
     }
 }
 

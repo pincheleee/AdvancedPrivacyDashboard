@@ -2,27 +2,23 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <!-- App Sandbox (disabled for full system access; enable for App Store) -->
+    <!-- No sandbox — required for system monitoring tools -->
     <key>com.apple.security.app-sandbox</key>
     <false/>
 
-    <!-- Network access -->
+    <!-- Network access (GeoIP, HIBP API, update checker) -->
     <key>com.apple.security.network.client</key>
     <true/>
     <key>com.apple.security.network.server</key>
     <true/>
 
-    <!-- File access for TCC database and system logs -->
+    <!-- File access for TCC database, exports, system logs -->
     <key>com.apple.security.files.user-selected.read-write</key>
     <true/>
     <key>com.apple.security.files.downloads.read-write</key>
     <true/>
 
-    <!-- Scripting/automation for system commands -->
-    <key>com.apple.security.scripting-targets</key>
-    <dict/>
-
-    <!-- Login item -->
+    <!-- Login item (SMAppService) -->
     <key>com.apple.developer.service-management.login-item</key>
     <true/>
 
@@ -31,5 +27,11 @@
     <array>
         <string>group.com.privacydashboard.shared</string>
     </array>
+
+    <!-- Hardened runtime exceptions for system command execution -->
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <key>com.apple.security.automation.apple-events</key>
+    <true/>
 </dict>
 </plist>

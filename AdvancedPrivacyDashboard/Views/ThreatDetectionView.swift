@@ -250,62 +250,16 @@ struct ThreatDetectionView: View {
         scanComplete = false
         threats.removeAll()
 
-        Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { timer in
-            if scanProgress < 1.0 {
-                scanProgress += 0.008
-            } else {
-                timer.invalidate()
-                isScanning = false
-                scanComplete = true
-                lastScanDate = Date()
-                // Run real checks
-                performSystemChecks()
+        ScanService.shared.runScan { detected in
+            isScanning = false
+            scanComplete = true
+            lastScanDate = Date()
+
+            withAnimation {
+                threats = detected
             }
-        }
-    }
 
-    private func performSystemChecks() {
-        var detected: [Threat] = []
-
-        // Check for SIP status
-        if let sipDisabled = checkSIPStatus(), sipDisabled {
-            detected.append(Threat(
-                name: "System Integrity Protection Disabled",
-                description: "SIP is disabled, which reduces system security",
-                severity: .critical,
-                icon: "xmark.shield.fill",
-                color: .red
-            ))
-        }
-
-        // Check for unsigned apps (simulated based on Gatekeeper)
-        if checkGatekeeperDisabled() {
-            detected.append(Threat(
-                name: "Gatekeeper Not Fully Enabled",
-                description: "App installation from unidentified developers is allowed",
-                severity: .medium,
-                icon: "exclamationmark.triangle.fill",
-                color: .yellow
-            ))
-        }
-
-        // Check for remote login
-        if checkRemoteLoginEnabled() {
-            detected.append(Threat(
-                name: "Remote Login Enabled",
-                description: "SSH remote login is enabled on this Mac",
-                severity: .low,
-                icon: "network",
-                color: .orange
-            ))
-        }
-
-        withAnimation {
-            threats = detected
-        }
-
-        // Log threats to persistence and send notifications
-        if !detected.isEmpty {
+            // Log threats to persistence and send notifications
             for threat in detected {
                 PersistenceManager.shared.logThreat(
                     name: threat.name,
@@ -320,6 +274,14 @@ struct ThreatDetectionView: View {
             }
             // Refresh history after logging
             loadThreatHistory()
+        }
+
+        // Bind progress from the shared service
+        Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { timer in
+            scanProgress = ScanService.shared.scanProgress
+            if !ScanService.shared.isScanning {
+                timer.invalidate()
+            }
         }
     }
 
@@ -346,65 +308,6 @@ struct ThreatDetectionView: View {
         case "medium": return .yellow
         case "low": return .orange
         default: return .gray
-        }
-    }
-
-    // MARK: - System Checks
-
-    private func checkSIPStatus() -> Bool? {
-        let task = Process()
-        let pipe = Pipe()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/csrutil")
-        task.arguments = ["status"]
-        task.standardOutput = pipe
-        task.standardError = FileHandle.nullDevice
-
-        do {
-            try task.run()
-            task.waitUntilExit()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            let output = String(data: data, encoding: .utf8) ?? ""
-            return output.contains("disabled")
-        } catch {
-            return nil
-        }
-    }
-
-    private func checkGatekeeperDisabled() -> Bool {
-        let task = Process()
-        let pipe = Pipe()
-        task.executableURL = URL(fileURLWithPath: "/usr/sbin/spctl")
-        task.arguments = ["--status"]
-        task.standardOutput = pipe
-        task.standardError = pipe
-
-        do {
-            try task.run()
-            task.waitUntilExit()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            let output = String(data: data, encoding: .utf8) ?? ""
-            return output.contains("disabled")
-        } catch {
-            return false
-        }
-    }
-
-    private func checkRemoteLoginEnabled() -> Bool {
-        let task = Process()
-        let pipe = Pipe()
-        task.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-        task.arguments = ["list"]
-        task.standardOutput = pipe
-        task.standardError = FileHandle.nullDevice
-
-        do {
-            try task.run()
-            task.waitUntilExit()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            let output = String(data: data, encoding: .utf8) ?? ""
-            return output.contains("com.openssh.sshd")
-        } catch {
-            return false
         }
     }
 }

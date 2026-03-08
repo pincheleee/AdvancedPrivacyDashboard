@@ -103,7 +103,7 @@ class NetworkMonitor: ObservableObject {
     private func readSystemNetworkBytes() -> (bytesIn: UInt64, bytesOut: UInt64) {
         let task = Process()
         let pipe = Pipe()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/netstat")
+        task.executableURL = URL(fileURLWithPath: "/usr/sbin/netstat")
         task.arguments = ["-ib"]
         task.standardOutput = pipe
         task.standardError = FileHandle.nullDevice
@@ -147,7 +147,7 @@ class NetworkMonitor: ObservableObject {
     private func getActiveConnectionCount() -> Int {
         let task = Process()
         let pipe = Pipe()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/netstat")
+        task.executableURL = URL(fileURLWithPath: "/usr/sbin/netstat")
         task.arguments = ["-an", "-p", "tcp"]
         task.standardOutput = pipe
         task.standardError = FileHandle.nullDevice
@@ -175,7 +175,7 @@ class NetworkMonitor: ObservableObject {
         // Check for unusual outbound connections
         let task = Process()
         let pipe = Pipe()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/netstat")
+        task.executableURL = URL(fileURLWithPath: "/usr/sbin/netstat")
         task.arguments = ["-an", "-p", "tcp"]
         task.standardOutput = pipe
         task.standardError = FileHandle.nullDevice
