@@ -6,10 +6,29 @@ class BreachCheckService: ObservableObject {
     @Published var breaches: [BreachResult] = []
     @Published var isLoading: Bool = false
     @Published var errorMessage: String?
+    @Published var apiKey: String = ""
 
-    /// Check email against known breaches using the k-anonymity approach (SHA-1 prefix)
-    /// In production, this would call the HIBP API. Here we demonstrate the pattern
-    /// and provide simulated results for the demo.
+    /// Tracks when the last HIBP request was made for rate limiting (1.5s between requests).
+    private var lastRequestTime: Date = .distantPast
+
+    /// Minimum interval between HIBP API requests (HIBP requires 1.5s).
+    private let rateLimitInterval: TimeInterval = 1.6
+
+    init() {
+        // Load saved API key from persistence
+        if let saved = PersistenceManager.shared.getSetting(key: "hibp_api_key"), !saved.isEmpty {
+            apiKey = saved
+        }
+    }
+
+    /// Persist the API key whenever it changes.
+    func saveAPIKey(_ key: String) {
+        apiKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        PersistenceManager.shared.saveSetting(key: "hibp_api_key", value: apiKey)
+    }
+
+    /// Check email against known breaches via the HIBP v3 API.
+    /// Falls back to demo data only if no API key is configured.
     func checkEmail(_ email: String) {
         guard !email.isEmpty else { return }
         isLoading = true
@@ -19,32 +38,234 @@ class BreachCheckService: ObservableObject {
             status.emailsMonitored.append(email)
         }
 
-        // Simulate API call delay
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-            self?.performBreachCheck(email: email)
+        if apiKey.isEmpty {
+            // No API key -- show a note and fall back to demo data
+            errorMessage = "No HIBP API key configured. Showing demo results. Add your key in the breach check view to get real data."
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                self?.applyDemoBreaches(for: email)
+            }
+            return
+        }
+
+        // Enforce rate limiting
+        let elapsed = Date().timeIntervalSince(lastRequestTime)
+        let delay = max(0, rateLimitInterval - elapsed)
+
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + delay) { [weak self] in
+            self?.performHIBPRequest(email: email)
         }
     }
 
-    private func performBreachCheck(email: String) {
-        // In production: call HIBP API with k-anonymity
-        // GET https://haveibeenpwned.com/api/v3/breachedaccount/{email}
-        // For now, generate realistic demo results
+    // MARK: - Real HIBP API
 
-        let demoBreaches = generateDemoBreaches(for: email)
-        breaches = demoBreaches
-        status.totalBreaches = demoBreaches.count
-        status.exposedPasswords = demoBreaches.filter { $0.dataTypes.contains("Passwords") }.count
-        status.exposedEmails = demoBreaches.filter { $0.dataTypes.contains("Email addresses") }.count
-        status.lastChecked = Date()
-        status.isChecking = false
-        isLoading = false
+    private func performHIBPRequest(email: String) {
+        let encoded = email.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? email
+        guard let url = URL(string: "https://haveibeenpwned.com/api/v3/breachedaccount/\(encoded)?truncateResponse=false") else {
+            DispatchQueue.main.async { [weak self] in
+                self?.errorMessage = "Invalid email address for API request."
+                self?.isLoading = false
+            }
+            return
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("AdvancedPrivacyDashboard/1.0", forHTTPHeaderField: "User-Agent")
+        request.setValue(apiKey, forHTTPHeaderField: "hibp-api-key")
+        request.timeoutInterval = 15
+
+        lastRequestTime = Date()
+
+        let task = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+            DispatchQueue.main.async {
+                self?.handleHIBPResponse(email: email, data: data, response: response, error: error)
+            }
+        }
+        task.resume()
     }
 
-    private func generateDemoBreaches(for email: String) -> [BreachResult] {
-        // Realistic demo data based on common known breaches
-        let calendar = Calendar.current
+    private func handleHIBPResponse(email: String, data: Data?, response: URLResponse?, error: Error?) {
+        isLoading = false
+        status.lastChecked = Date()
+        status.isChecking = false
 
-        return [
+        if let error = error {
+            errorMessage = "Network error: \(error.localizedDescription)"
+            return
+        }
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            errorMessage = "Unexpected response from HIBP."
+            return
+        }
+
+        switch httpResponse.statusCode {
+        case 200:
+            // Breaches found -- parse JSON
+            guard let data = data else {
+                errorMessage = "Empty response body from HIBP."
+                return
+            }
+            parseHIBPBreaches(data: data)
+
+        case 404:
+            // No breaches found for this account
+            breaches = []
+            status.totalBreaches = 0
+            status.exposedPasswords = 0
+            status.exposedEmails = 0
+            errorMessage = nil
+
+        case 401:
+            errorMessage = "HIBP API key is invalid or unauthorized. Check your key and try again."
+
+        case 429:
+            errorMessage = "Rate limited by HIBP. Please wait a moment and try again."
+
+        case 503:
+            errorMessage = "HIBP service is temporarily unavailable. Try again later."
+
+        default:
+            errorMessage = "HIBP returned HTTP \(httpResponse.statusCode). Check your API key or try again later."
+        }
+    }
+
+    private func parseHIBPBreaches(data: Data) {
+        // HIBP returns an array of breach objects
+        // Key fields: Name, BreachDate, Description, DataClasses, PwnCount, IsVerified
+        guard let jsonArray = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            errorMessage = "Failed to parse HIBP response."
+            return
+        }
+
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "yyyy-MM-dd"
+
+        var results: [BreachResult] = []
+
+        for obj in jsonArray {
+            let name = obj["Name"] as? String ?? obj["Title"] as? String ?? "Unknown"
+            let breachDateStr = obj["BreachDate"] as? String ?? ""
+            let description = obj["Description"] as? String ?? ""
+            let dataClasses = obj["DataClasses"] as? [String] ?? []
+            let pwnCount = obj["PwnCount"] as? Int ?? 0
+            let isVerified = obj["IsVerified"] as? Bool ?? false
+
+            let breachDate = dateFormatter.date(from: breachDateStr) ?? Date()
+            let severity = Self.determineSeverity(dataClasses: dataClasses, pwnCount: pwnCount)
+
+            // Strip HTML tags from HIBP descriptions
+            let cleanDescription = description.replacingOccurrences(
+                of: "<[^>]+>",
+                with: "",
+                options: .regularExpression
+            )
+
+            let result = BreachResult(
+                serviceName: name,
+                breachDate: breachDate,
+                description: cleanDescription,
+                dataTypes: dataClasses,
+                severity: severity,
+                recordCount: pwnCount,
+                isVerified: isVerified
+            )
+            results.append(result)
+        }
+
+        // Sort by date descending (most recent first)
+        results.sort { $0.breachDate > $1.breachDate }
+
+        breaches = results
+        status.totalBreaches = results.count
+        status.exposedPasswords = results.filter { $0.dataTypes.contains("Passwords") }.count
+        status.exposedEmails = results.filter { $0.dataTypes.contains("Email addresses") }.count
+        errorMessage = nil
+    }
+
+    /// Determine severity based on what data was exposed and scale.
+    private static func determineSeverity(dataClasses: [String], pwnCount: Int) -> BreachResult.Severity {
+        let hasPasswords = dataClasses.contains("Passwords")
+        let hasCreditCards = dataClasses.contains("Credit cards") || dataClasses.contains("Payment information")
+        let hasSSN = dataClasses.contains("Social security numbers") || dataClasses.contains("Government issued IDs")
+
+        if hasSSN || hasCreditCards {
+            return .critical
+        } else if hasPasswords && pwnCount > 1_000_000 {
+            return .critical
+        } else if hasPasswords {
+            return .high
+        } else if pwnCount > 10_000_000 {
+            return .high
+        } else if pwnCount > 100_000 {
+            return .medium
+        } else {
+            return .low
+        }
+    }
+
+    // MARK: - Password Check (k-anonymity)
+
+    /// Check a password against the HIBP Pwned Passwords API using k-anonymity.
+    /// Only the first 5 characters of the SHA-1 hash are sent to the server.
+    /// Returns the number of times the password has appeared in breaches, or nil on error.
+    func checkPassword(_ password: String, completion: @escaping (Int?) -> Void) {
+        guard !password.isEmpty else {
+            completion(nil)
+            return
+        }
+
+        // Compute SHA-1 hash of the password
+        let passwordData = Data(password.utf8)
+        var digest = [UInt8](repeating: 0, count: 20)
+
+        _ = passwordData.withUnsafeBytes { bytes in
+            CC_SHA1_Wrapper(bytes.baseAddress!, CC_LONG(passwordData.count), &digest)
+        }
+
+        let sha1Hex = digest.map { String(format: "%02X", $0) }.joined()
+        let prefix = String(sha1Hex.prefix(5))
+        let suffix = String(sha1Hex.dropFirst(5))
+
+        guard let url = URL(string: "https://api.pwnedpasswords.com/range/\(prefix)") else {
+            completion(nil)
+            return
+        }
+
+        var request = URLRequest(url: url)
+        request.setValue("AdvancedPrivacyDashboard/1.0", forHTTPHeaderField: "User-Agent")
+        request.timeoutInterval = 10
+
+        let task = URLSession.shared.dataTask(with: request) { data, response, error in
+            guard let data = data,
+                  let httpResponse = response as? HTTPURLResponse,
+                  httpResponse.statusCode == 200,
+                  let body = String(data: data, encoding: .utf8) else {
+                DispatchQueue.main.async { completion(nil) }
+                return
+            }
+
+            // Each line is HASH_SUFFIX:COUNT
+            var count = 0
+            for line in body.components(separatedBy: "\n") {
+                let parts = line.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: ":")
+                guard parts.count == 2 else { continue }
+                if String(parts[0]) == suffix {
+                    count = Int(parts[1]) ?? 0
+                    break
+                }
+            }
+
+            DispatchQueue.main.async { completion(count) }
+        }
+        task.resume()
+    }
+
+    // MARK: - Demo Fallback
+
+    private func applyDemoBreaches(for email: String) {
+        let calendar = Calendar.current
+        let demoBreaches = [
             BreachResult(
                 serviceName: "LinkedIn",
                 breachDate: calendar.date(from: DateComponents(year: 2021, month: 6)) ?? Date(),
@@ -73,6 +294,14 @@ class BreachCheckService: ObservableObject {
                 isVerified: true
             ),
         ]
+
+        breaches = demoBreaches
+        status.totalBreaches = demoBreaches.count
+        status.exposedPasswords = demoBreaches.filter { $0.dataTypes.contains("Passwords") }.count
+        status.exposedEmails = demoBreaches.filter { $0.dataTypes.contains("Email addresses") }.count
+        status.lastChecked = Date()
+        status.isChecking = false
+        isLoading = false
     }
 
     func clearResults() {
@@ -84,4 +313,13 @@ class BreachCheckService: ObservableObject {
     func removeMonitoredEmail(_ email: String) {
         status.emailsMonitored.removeAll { $0 == email }
     }
+}
+
+// MARK: - SHA-1 Helper
+
+// CommonCrypto wrapper for SHA-1 (used by k-anonymity password check)
+import CommonCrypto
+
+private func CC_SHA1_Wrapper(_ data: UnsafeRawPointer, _ len: CC_LONG, _ md: UnsafeMutablePointer<UInt8>) -> UnsafeMutablePointer<UInt8>? {
+    return CC_SHA1(data, len, md)
 }

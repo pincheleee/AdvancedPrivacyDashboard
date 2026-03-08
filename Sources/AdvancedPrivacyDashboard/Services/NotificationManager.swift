@@ -115,6 +115,18 @@ class NotificationManager: ObservableObject {
         send(content, identifier: "privacy-\(UUID().uuidString)")
     }
 
+    func sendScanCompleteNotification() {
+        guard isEnabled(for: .threat) else { return }
+
+        let content = UNMutableNotificationContent()
+        content.title = "Scan Complete"
+        content.body = "System scan finished -- no issues found."
+        content.sound = .default
+        content.categoryIdentifier = Category.system.rawValue
+
+        send(content, identifier: "scan-complete-\(UUID().uuidString)")
+    }
+
     func sendNetworkAlert(title: String, body: String) {
         guard isEnabled(for: .network) else { return }
 

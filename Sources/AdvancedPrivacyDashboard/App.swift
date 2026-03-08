@@ -28,6 +28,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NotificationManager.shared.requestPermission()
         VPNDetector.shared.startMonitoring()
         UpdateChecker.shared.schedulePeriodicCheck()
+        WidgetDataWriter.shared.startPeriodicUpdates()
 
         // Trigger PersistenceManager initialization
         _ = PersistenceManager.shared
