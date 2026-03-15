@@ -84,9 +84,8 @@ class NotificationManager: ObservableObject {
             ? .defaultCritical : .default
         content.categoryIdentifier = Category.threat.rawValue
 
+        // W3: Removed duplicate logThreat call. Callers are responsible for persistence.
         send(content, identifier: "threat-\(UUID().uuidString)")
-
-        PersistenceManager.shared.logThreat(name: title, description: body, severity: severity)
     }
 
     func sendBreachAlert(email: String, breachCount: Int) {

@@ -12,7 +12,6 @@ class NotificationManager: ObservableObject {
         case privacy = "PRIVACY_VIOLATION"
         case network = "NETWORK_ALERT"
         case system = "SYSTEM_UPDATE"
-        case scanComplete = "SCAN_COMPLETE"
     }
 
     private init() {
@@ -20,10 +19,7 @@ class NotificationManager: ObservableObject {
     }
 
     func requestPermission() {
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { [weak self] granted, error in
-            if let error = error {
-                print("NotificationManager: Permission request error: \(error)")
-            }
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { [weak self] granted, _ in
             DispatchQueue.main.async {
                 self?.isAuthorized = granted
                 if granted {
@@ -31,11 +27,6 @@ class NotificationManager: ObservableObject {
                 }
             }
         }
-    }
-
-    /// Re-check and update authorization status (call after app returns to foreground).
-    func refreshAuthorization() {
-        checkAuthorization()
     }
 
     private func checkAuthorization() {
@@ -75,14 +66,8 @@ class NotificationManager: ObservableObject {
             intentIdentifiers: []
         )
 
-        let scanCategory = UNNotificationCategory(
-            identifier: Category.scanComplete.rawValue,
-            actions: [viewAction, dismissAction],
-            intentIdentifiers: []
-        )
-
         UNUserNotificationCenter.current().setNotificationCategories([
-            threatCategory, breachCategory, privacyCategory, networkCategory, scanCategory
+            threatCategory, breachCategory, privacyCategory, networkCategory
         ])
     }
 
@@ -95,13 +80,12 @@ class NotificationManager: ObservableObject {
         content.title = "Threat Detected"
         content.subtitle = title
         content.body = body
-        content.sound = soundForSeverity(severity)
+        content.sound = severity == "Critical" || severity == "High"
+            ? .defaultCritical : .default
         content.categoryIdentifier = Category.threat.rawValue
-        content.interruptionLevel = (severity == "Critical" || severity == "High") ? .critical : .active
 
+        // W3: Removed duplicate logThreat call. Callers are responsible for persistence.
         send(content, identifier: "threat-\(UUID().uuidString)")
-
-        PersistenceManager.shared.logThreat(name: title, description: body, severity: severity)
     }
 
     func sendBreachAlert(email: String, breachCount: Int) {
@@ -111,9 +95,7 @@ class NotificationManager: ObservableObject {
         content.title = "Data Breach Alert"
         content.subtitle = "\(breachCount) breach(es) found"
         content.body = "Your email \(email) was found in \(breachCount) known data breach(es)."
-        content.sound = breachCount > 3
-            ? UNNotificationSound(named: UNNotificationSoundName("Basso"))
-            : UNNotificationSound.default
+        content.sound = .default
         content.categoryIdentifier = Category.breach.rawValue
 
         send(content, identifier: "breach-\(UUID().uuidString)")
@@ -132,6 +114,18 @@ class NotificationManager: ObservableObject {
         send(content, identifier: "privacy-\(UUID().uuidString)")
     }
 
+    func sendScanCompleteNotification() {
+        guard isEnabled(for: .threat) else { return }
+
+        let content = UNMutableNotificationContent()
+        content.title = "Scan Complete"
+        content.body = "System scan finished -- no issues found."
+        content.sound = .default
+        content.categoryIdentifier = Category.system.rawValue
+
+        send(content, identifier: "scan-complete-\(UUID().uuidString)")
+    }
+
     func sendNetworkAlert(title: String, body: String) {
         guard isEnabled(for: .network) else { return }
 
@@ -139,51 +133,14 @@ class NotificationManager: ObservableObject {
         content.title = "Network Alert"
         content.subtitle = title
         content.body = body
-        content.sound = UNNotificationSound.default
+        content.sound = .default
         content.categoryIdentifier = Category.network.rawValue
 
         send(content, identifier: "network-\(UUID().uuidString)")
     }
 
-    func sendScanCompleteNotification() {
-        guard isEnabled(for: .scanComplete) else { return }
-
-        let content = UNMutableNotificationContent()
-        content.title = "Auto-Scan Complete"
-        content.body = "Scheduled system scan finished. No new threats detected."
-        content.sound = UNNotificationSound.default
-        content.categoryIdentifier = Category.scanComplete.rawValue
-
-        send(content, identifier: "scan-\(UUID().uuidString)")
-    }
-
-    // MARK: - Sound Selection
-
-    /// Returns an appropriate notification sound based on threat severity.
-    /// Critical/High threats use the system critical sound to break through DND.
-    /// Medium threats use a named alert sound. Low threats use the default sound.
-    private func soundForSeverity(_ severity: String) -> UNNotificationSound {
-        switch severity {
-        case "Critical":
-            return UNNotificationSound.defaultCritical
-        case "High":
-            return UNNotificationSound.defaultCriticalSound(withAudioVolume: 0.8)
-        case "Medium":
-            return UNNotificationSound(named: UNNotificationSoundName("Basso"))
-        default:
-            return UNNotificationSound.default
-        }
-    }
-
     private func send(_ content: UNMutableNotificationContent, identifier: String) {
-        // Re-check authorization in case it changed
-        if !isAuthorized {
-            refreshAuthorization()
-        }
-        guard isAuthorized else {
-            print("NotificationManager: Not authorized to send notifications. Request permission first.")
-            return
-        }
+        guard isAuthorized else { return }
 
         let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 0.1, repeats: false)
         let request = UNNotificationRequest(identifier: identifier, content: content, trigger: trigger)

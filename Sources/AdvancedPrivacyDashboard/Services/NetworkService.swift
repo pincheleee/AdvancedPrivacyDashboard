@@ -3,6 +3,9 @@ import Network
 import Combine
 
 class NetworkService: ObservableObject {
+    /// W6: Shared singleton to prevent multiple views spawning independent monitors.
+    static let shared = NetworkService()
+
     @Published var networkStatus: NetworkStatus = .unknown
     @Published var activeConnections: [NetworkConnection] = []
     @Published var networkStats: NetworkStats = .init()
@@ -12,8 +15,9 @@ class NetworkService: ObservableObject {
     private let networkMonitor: NetworkMonitor
     private var pathMonitor: NWPathMonitor?
     private var connectionRefreshTimer: Timer?
+    private var isMonitoringActive = false
 
-    init() {
+    private init() {
         self.trafficHistory = NetworkTrafficHistory()
         self.networkMonitor = NetworkMonitor()
     }
@@ -47,6 +51,9 @@ class NetworkService: ObservableObject {
     }
 
     func startMonitoring() {
+        guard !isMonitoringActive else { return }
+        isMonitoringActive = true
+
         setupPathMonitor()
         pathMonitor?.start(queue: DispatchQueue.global(qos: .utility))
 
@@ -54,7 +61,6 @@ class NetworkService: ObservableObject {
             self?.updateNetworkStats(stats)
         }
 
-        // Refresh real connections every 5 seconds
         refreshActiveConnections()
         connectionRefreshTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
             self?.refreshActiveConnections()
@@ -64,6 +70,7 @@ class NetworkService: ObservableObject {
     }
 
     func stopMonitoring() {
+        isMonitoringActive = false
         pathMonitor?.cancel()
         pathMonitor = nil
         networkMonitor.stopMonitoring()
@@ -101,8 +108,9 @@ class NetworkService: ObservableObject {
 
         do {
             try task.run()
-            task.waitUntilExit()
+            // C1: Read before wait to prevent pipe buffer deadlock
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            task.waitUntilExit()
             guard let output = String(data: data, encoding: .utf8) else { return [] }
             return parseLsofOutput(output)
         } catch {

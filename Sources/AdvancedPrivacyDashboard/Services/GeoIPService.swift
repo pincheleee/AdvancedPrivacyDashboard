@@ -43,7 +43,6 @@ class GeoIPService: ObservableObject {
         }
 
         var isSuspicious: Bool {
-            // Flag IPs from commonly flagged ASNs or countries with high cybercrime
             let suspiciousOrgs = ["tor", "vpn", "proxy", "hosting", "cloud", "data center"]
             let orgLower = (org ?? "").lowercased()
             return suspiciousOrgs.contains(where: { orgLower.contains($0) })
@@ -59,7 +58,6 @@ class GeoIPService: ObservableObject {
 
     /// Look up a single IP. Returns cached result if available.
     func lookup(_ ip: String) async -> GeoIPResult? {
-        // Skip private/local IPs
         guard !isPrivateIP(ip) else { return nil }
 
         if let cached = cache[ip] { return cached }
@@ -73,13 +71,14 @@ class GeoIPService: ObservableObject {
 
         lastRequestTime = Date()
 
-        guard let url = URL(string: "http://ip-api.com/json/\(ip)?fields=status,country,countryCode,region,regionName,city,zip,lat,lon,timezone,isp,org,as,query") else { return nil }
+        // C3: Use HTTPS via ipapi.co instead of plaintext HTTP ip-api.com
+        guard let url = URL(string: "https://ipapi.co/\(ip)/json/") else { return nil }
 
         do {
             let (data, _) = try await session.data(from: url)
             let result = try JSONDecoder().decode(GeoIPResult.self, from: data)
 
-            if result.status == "success" {
+            if result.status == "success" || result.country != nil {
                 await MainActor.run {
                     cache[ip] = result
                 }
@@ -95,47 +94,10 @@ class GeoIPService: ObservableObject {
     func batchLookup(_ ips: [String]) async -> [String: GeoIPResult] {
         var results: [String: GeoIPResult] = [:]
 
-        // Use batch API for efficiency (up to 100 IPs)
         let uniqueIPs = Array(Set(ips.filter { !isPrivateIP($0) && cache[$0] == nil }))
 
-        if uniqueIPs.count > 1 {
-            // Use batch endpoint
-            guard let url = URL(string: "http://ip-api.com/batch?fields=status,country,countryCode,region,regionName,city,zip,lat,lon,timezone,isp,org,as,query") else { return cache }
-
-            var request = URLRequest(url: url)
-            request.httpMethod = "POST"
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-
-            let batch = uniqueIPs.prefix(100).map { ["query": $0] }
-            request.httpBody = try? JSONSerialization.data(withJSONObject: batch)
-
-            do {
-                let (data, _) = try await session.data(for: request)
-                let batchResults = try JSONDecoder().decode([GeoIPResult].self, from: data)
-
-                let batchMapped: [String: GeoIPResult] = batchResults.reduce(into: [:]) { dict, result in
-                    if result.status == "success", let query = result.query {
-                        dict[query] = result
-                    }
-                }
-                let mapped = batchMapped
-                await MainActor.run {
-                    for (key, val) in mapped {
-                        cache[key] = val
-                    }
-                }
-                for (key, val) in mapped {
-                    results[key] = val
-                }
-            } catch {
-                // Fall back to individual lookups
-                for ip in uniqueIPs.prefix(5) {
-                    if let result = await lookup(ip) {
-                        results[ip] = result
-                    }
-                }
-            }
-        } else if let ip = uniqueIPs.first {
+        // ipapi.co doesn't have a batch endpoint, so look up individually (limited to 5)
+        for ip in uniqueIPs.prefix(5) {
             if let result = await lookup(ip) {
                 results[ip] = result
             }
@@ -151,13 +113,20 @@ class GeoIPService: ObservableObject {
         return results
     }
 
+    /// W5: Fixed RFC 1918 coverage -- properly handles 172.16-31.x.x range
+    /// and IPv6 link-local/ULA addresses.
     private func isPrivateIP(_ ip: String) -> Bool {
-        return ip.hasPrefix("10.") ||
-               ip.hasPrefix("172.16.") || ip.hasPrefix("172.17.") || ip.hasPrefix("172.18.") ||
-               ip.hasPrefix("172.19.") || ip.hasPrefix("172.2") || ip.hasPrefix("172.30.") ||
-               ip.hasPrefix("172.31.") ||
-               ip.hasPrefix("192.168.") ||
-               ip.hasPrefix("127.") ||
-               ip == "::1" || ip == "0.0.0.0" || ip == "*"
+        if ip.hasPrefix("10.") || ip.hasPrefix("192.168.") || ip.hasPrefix("127.") { return true }
+        if ip == "::1" || ip == "0.0.0.0" || ip == "*" { return true }
+        // IPv6 link-local and ULA
+        if ip.hasPrefix("fe80:") || ip.hasPrefix("fc") || ip.hasPrefix("fd") { return true }
+        // 172.16.0.0 - 172.31.255.255
+        if ip.hasPrefix("172.") {
+            let parts = ip.split(separator: ".")
+            if parts.count >= 2, let second = Int(parts[1]) {
+                return second >= 16 && second <= 31
+            }
+        }
+        return false
     }
 }

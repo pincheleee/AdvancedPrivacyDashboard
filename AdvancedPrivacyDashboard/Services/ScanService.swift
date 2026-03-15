@@ -2,7 +2,6 @@ import Foundation
 import SwiftUI
 
 /// Shared system scan service used by both ThreatDetectionView and the auto-scan timer.
-/// Extracts all system check logic so it can be invoked from anywhere.
 class ScanService: ObservableObject {
     static let shared = ScanService()
 
@@ -11,7 +10,6 @@ class ScanService: ObservableObject {
     @Published var lastScanDate: Date?
     @Published var lastScanThreats: [Threat] = []
 
-    /// A simple security score from 0-100 based on the last scan results.
     @Published var securityScore: Int = 100
 
     private init() {}
@@ -29,20 +27,23 @@ class ScanService: ObservableObject {
             self.lastScanThreats.removeAll()
         }
 
-        // Animate progress on a timer, then perform real checks at the end
+        // Animate progress on a timer, then perform real checks on background thread
         Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] timer in
             guard let self = self else { timer.invalidate(); return }
             if self.scanProgress < 1.0 {
                 self.scanProgress += 0.008
             } else {
                 timer.invalidate()
-                let detected = self.performSystemChecks()
-                DispatchQueue.main.async {
-                    self.isScanning = false
-                    self.lastScanDate = Date()
-                    self.lastScanThreats = detected
-                    self.securityScore = self.calculateScore(from: detected)
-                    completion?(detected)
+                // C4: Run system checks on background thread
+                DispatchQueue.global(qos: .utility).async {
+                    let detected = self.performSystemChecks()
+                    DispatchQueue.main.async {
+                        self.isScanning = false
+                        self.lastScanDate = Date()
+                        self.lastScanThreats = detected
+                        self.securityScore = self.calculateScore(from: detected)
+                        completion?(detected)
+                    }
                 }
             }
         }
@@ -50,30 +51,33 @@ class ScanService: ObservableObject {
 
     /// Run system checks immediately without progress animation (for auto-scan timer).
     func runQuietScan() {
-        let detected = performSystemChecks()
-        DispatchQueue.main.async {
-            self.lastScanDate = Date()
-            self.lastScanThreats = detected
-            self.securityScore = self.calculateScore(from: detected)
-        }
+        // C4: Run on background thread
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self = self else { return }
+            let detected = self.performSystemChecks()
+            DispatchQueue.main.async {
+                self.lastScanDate = Date()
+                self.lastScanThreats = detected
+                self.securityScore = self.calculateScore(from: detected)
+            }
 
-        // Log results to persistence and send notifications
-        for threat in detected {
-            PersistenceManager.shared.logThreat(
-                name: threat.name,
-                description: threat.description,
-                severity: threat.severity.rawValue
-            )
-            NotificationManager.shared.sendThreatAlert(
-                title: threat.name,
-                body: threat.description,
-                severity: threat.severity.rawValue
-            )
-        }
+            // W3: Only log to persistence here; notification handles its own logging
+            for threat in detected {
+                PersistenceManager.shared.logThreat(
+                    name: threat.name,
+                    description: threat.description,
+                    severity: threat.severity.rawValue
+                )
+                NotificationManager.shared.sendThreatAlert(
+                    title: threat.name,
+                    body: threat.description,
+                    severity: threat.severity.rawValue
+                )
+            }
 
-        // Send a summary notification if the scan was clean
-        if detected.isEmpty {
-            NotificationManager.shared.sendScanCompleteNotification()
+            if detected.isEmpty {
+                NotificationManager.shared.sendScanCompleteNotification()
+            }
         }
     }
 
@@ -110,10 +114,10 @@ class ScanService: ObservableObject {
 
     // MARK: - System Checks
 
+    /// All checks use readBeforeWait pattern (C1) and run on background thread (C4).
     func performSystemChecks() -> [Threat] {
         var detected: [Threat] = []
 
-        // Check SIP status
         if let sipDisabled = checkSIPStatus(), sipDisabled {
             detected.append(Threat(
                 name: "System Integrity Protection Disabled",
@@ -124,7 +128,6 @@ class ScanService: ObservableObject {
             ))
         }
 
-        // Check Gatekeeper
         if checkGatekeeperDisabled() {
             detected.append(Threat(
                 name: "Gatekeeper Not Fully Enabled",
@@ -135,7 +138,6 @@ class ScanService: ObservableObject {
             ))
         }
 
-        // Check remote login (SSH)
         if checkRemoteLoginEnabled() {
             detected.append(Threat(
                 name: "Remote Login (SSH) Enabled",
@@ -146,8 +148,8 @@ class ScanService: ObservableObject {
             ))
         }
 
-        // Check firewall status
-        if !checkFirewallEnabled() {
+        // S1: Use centralized firewall check
+        if !SystemCommandRunner.isFirewallEnabled() {
             detected.append(Threat(
                 name: "Firewall Disabled",
                 description: "The macOS application firewall is not enabled",
@@ -157,7 +159,6 @@ class ScanService: ObservableObject {
             ))
         }
 
-        // Check FileVault
         if !checkFileVaultEnabled() {
             detected.append(Threat(
                 name: "FileVault Disabled",
@@ -168,7 +169,6 @@ class ScanService: ObservableObject {
             ))
         }
 
-        // Check for suspicious network connections
         let suspiciousConns = checkSuspiciousConnections()
         for conn in suspiciousConns {
             detected.append(Threat(
@@ -180,7 +180,6 @@ class ScanService: ObservableObject {
             ))
         }
 
-        // Check for world-writable files in /usr/local
         if checkWorldWritablePaths() {
             detected.append(Threat(
                 name: "World-Writable Paths Found",
@@ -191,7 +190,6 @@ class ScanService: ObservableObject {
             ))
         }
 
-        // Check screen lock
         if !checkScreenLockEnabled() {
             detected.append(Threat(
                 name: "Screen Lock Not Configured",
@@ -206,24 +204,12 @@ class ScanService: ObservableObject {
     }
 
     // MARK: - Individual System Checks
+    // All use read-before-wait pattern (C1/C5)
 
     func checkSIPStatus() -> Bool? {
-        let task = Process()
-        let pipe = Pipe()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/csrutil")
-        task.arguments = ["status"]
-        task.standardOutput = pipe
-        task.standardError = FileHandle.nullDevice
-
-        do {
-            try task.run()
-            task.waitUntilExit()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            let output = String(data: data, encoding: .utf8) ?? ""
-            return output.contains("disabled")
-        } catch {
-            return nil
-        }
+        let output = SystemCommandRunner.runSync("/usr/bin/csrutil", arguments: ["status"])
+        guard !output.isEmpty else { return nil }
+        return output.contains("disabled")
     }
 
     func checkGatekeeperDisabled() -> Bool {
@@ -236,8 +222,8 @@ class ScanService: ObservableObject {
 
         do {
             try task.run()
-            task.waitUntilExit()
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            task.waitUntilExit()
             let output = String(data: data, encoding: .utf8) ?? ""
             return output.contains("disabled")
         } catch {
@@ -246,105 +232,45 @@ class ScanService: ObservableObject {
     }
 
     func checkRemoteLoginEnabled() -> Bool {
-        let task = Process()
-        let pipe = Pipe()
-        task.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-        task.arguments = ["list"]
-        task.standardOutput = pipe
-        task.standardError = FileHandle.nullDevice
-
-        do {
-            try task.run()
-            task.waitUntilExit()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            let output = String(data: data, encoding: .utf8) ?? ""
-            return output.contains("com.openssh.sshd")
-        } catch {
-            return false
-        }
-    }
-
-    func checkFirewallEnabled() -> Bool {
-        let task = Process()
-        let pipe = Pipe()
-        task.executableURL = URL(fileURLWithPath: "/usr/libexec/ApplicationFirewall/socketfilterfw")
-        task.arguments = ["--getglobalstate"]
-        task.standardOutput = pipe
-        task.standardError = FileHandle.nullDevice
-
-        do {
-            try task.run()
-            task.waitUntilExit()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            let output = String(data: data, encoding: .utf8) ?? ""
-            return output.contains("enabled")
-        } catch {
-            return false
-        }
+        let output = SystemCommandRunner.runSync("/bin/launchctl", arguments: ["list"])
+        return output.contains("com.openssh.sshd")
     }
 
     func checkFileVaultEnabled() -> Bool {
-        let task = Process()
-        let pipe = Pipe()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/fdesetup")
-        task.arguments = ["status"]
-        task.standardOutput = pipe
-        task.standardError = FileHandle.nullDevice
-
-        do {
-            try task.run()
-            task.waitUntilExit()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            let output = String(data: data, encoding: .utf8) ?? ""
-            return output.contains("On")
-        } catch {
-            return false
-        }
+        let output = SystemCommandRunner.runSync("/usr/bin/fdesetup", arguments: ["status"])
+        return output.contains("On")
     }
 
     func checkSuspiciousConnections() -> [String] {
-        let task = Process()
-        let pipe = Pipe()
-        task.executableURL = URL(fileURLWithPath: "/usr/sbin/netstat")
-        task.arguments = ["-an", "-p", "tcp"]
-        task.standardOutput = pipe
-        task.standardError = FileHandle.nullDevice
-
-        do {
-            try task.run()
-            task.waitUntilExit()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            let output = String(data: data, encoding: .utf8) ?? ""
-            let suspiciousPorts = [4444, 5555, 6666, 8888, 31337, 12345, 1337, 9999]
-            var results: [String] = []
-            for line in output.components(separatedBy: "\n") where line.contains("ESTABLISHED") {
-                let parts = line.split(separator: " ", omittingEmptySubsequences: true)
-                guard parts.count >= 5 else { continue }
-                let foreignAddr = String(parts[4])
-                if let portStr = foreignAddr.split(separator: ".").last,
-                   let port = Int(portStr),
-                   suspiciousPorts.contains(port) {
-                    results.append("Connection to \(foreignAddr) on suspicious port \(port)")
-                }
+        let output = SystemCommandRunner.runSync("/usr/sbin/netstat", arguments: ["-an", "-p", "tcp"])
+        let suspiciousPorts = [4444, 5555, 6666, 8888, 31337, 12345, 1337, 9999]
+        var results: [String] = []
+        for line in output.components(separatedBy: "\n") where line.contains("ESTABLISHED") {
+            let parts = line.split(separator: " ", omittingEmptySubsequences: true)
+            guard parts.count >= 5 else { continue }
+            let foreignAddr = String(parts[4])
+            if let portStr = foreignAddr.split(separator: ".").last,
+               let port = Int(portStr),
+               suspiciousPorts.contains(port) {
+                results.append("Connection to \(foreignAddr) on suspicious port \(port)")
             }
-            return results
-        } catch {
-            return []
         }
+        return results
     }
 
+    /// W1: Uses explicit executable + arguments instead of shell().
     func checkWorldWritablePaths() -> Bool {
         let task = Process()
         let pipe = Pipe()
-        task.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        task.arguments = ["-c", "find /usr/local -maxdepth 2 -perm -0002 -type d 2>/dev/null | head -1"]
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/find")
+        task.arguments = ["/usr/local", "-maxdepth", "2", "-perm", "-0002", "-type", "d"]
         task.standardOutput = pipe
         task.standardError = FileHandle.nullDevice
 
         do {
             try task.run()
-            task.waitUntilExit()
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            task.waitUntilExit()
             let output = String(data: data, encoding: .utf8) ?? ""
             return !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         } catch {
@@ -352,18 +278,19 @@ class ScanService: ObservableObject {
         }
     }
 
+    /// W1: Uses explicit executable + arguments instead of shell().
     func checkScreenLockEnabled() -> Bool {
         let task = Process()
         let pipe = Pipe()
-        task.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        task.arguments = ["-c", "sysadminctl -screenLock status 2>&1"]
+        task.executableURL = URL(fileURLWithPath: "/usr/sbin/sysadminctl")
+        task.arguments = ["-screenLock", "status"]
         task.standardOutput = pipe
         task.standardError = pipe
 
         do {
             try task.run()
-            task.waitUntilExit()
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            task.waitUntilExit()
             let output = String(data: data, encoding: .utf8) ?? ""
             return output.contains("screenLock is on") || output.contains("enabled")
         } catch {

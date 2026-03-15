@@ -19,7 +19,6 @@ struct AdvancedPrivacyDashboardApp: App {
 class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var popover: NSPopover?
-    private var autoScanTimer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Register as login item (may fail without proper signing)
@@ -29,12 +28,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NotificationManager.shared.requestPermission()
         VPNDetector.shared.startMonitoring()
         UpdateChecker.shared.schedulePeriodicCheck()
+        WidgetDataWriter.shared.startPeriodicUpdates()
 
         // Trigger PersistenceManager initialization
         _ = PersistenceManager.shared
 
+        // W6: Start the shared network service once at launch
+        NetworkService.shared.startMonitoring()
+
         setupMenuBar()
-        setupAutoScan()
     }
 
     private func setupMenuBar() {
@@ -47,7 +49,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let popover = NSPopover()
-        popover.contentSize = NSSize(width: 300, height: 420)
+        popover.contentSize = NSSize(width: 320, height: 450)
         popover.behavior = .transient
         popover.contentViewController = NSHostingController(rootView: MenuBarView())
         self.popover = popover
@@ -61,235 +63,134 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         }
     }
-
-    // MARK: - Auto-Scan Timer
-
-    private func setupAutoScan() {
-        let pm = PersistenceManager.shared
-        let autoScanEnabled = pm.getBoolSetting(key: "autoScanEnabled", defaultValue: true)
-        guard autoScanEnabled else { return }
-
-        let scanIntervalHours = pm.getDoubleSetting(key: "scanInterval", defaultValue: 24.0)
-        let intervalSeconds = scanIntervalHours * 3600.0
-
-        autoScanTimer?.invalidate()
-        autoScanTimer = Timer.scheduledTimer(withTimeInterval: intervalSeconds, repeats: true) { [weak self] _ in
-            self?.runAutoScan()
-        }
-        // Also check if auto-scan settings change via a periodic settings poll
-        Timer.scheduledTimer(withTimeInterval: 60.0, repeats: true) { [weak self] _ in
-            self?.refreshAutoScanSettings()
-        }
-
-        print("AutoScan: Scheduled every \(Int(scanIntervalHours))h")
-    }
-
-    private func runAutoScan() {
-        let pm = PersistenceManager.shared
-        guard pm.getBoolSetting(key: "autoScanEnabled", defaultValue: true) else { return }
-
-        print("AutoScan: Running scheduled scan...")
-        DispatchQueue.global(qos: .utility).async {
-            ScanService.shared.runQuietScan()
-        }
-    }
-
-    private func refreshAutoScanSettings() {
-        let pm = PersistenceManager.shared
-        let enabled = pm.getBoolSetting(key: "autoScanEnabled", defaultValue: true)
-
-        if !enabled {
-            autoScanTimer?.invalidate()
-            autoScanTimer = nil
-            return
-        }
-
-        let newInterval = pm.getDoubleSetting(key: "scanInterval", defaultValue: 24.0) * 3600.0
-        if let existing = autoScanTimer, existing.isValid {
-            let currentInterval = existing.timeInterval
-            if abs(currentInterval - newInterval) > 60 {
-                // Interval changed, reschedule
-                existing.invalidate()
-                autoScanTimer = Timer.scheduledTimer(withTimeInterval: newInterval, repeats: true) { [weak self] _ in
-                    self?.runAutoScan()
-                }
-                print("AutoScan: Rescheduled to every \(Int(newInterval / 3600))h")
-            }
-        } else {
-            // Timer was nil or invalid, set it up
-            autoScanTimer = Timer.scheduledTimer(withTimeInterval: newInterval, repeats: true) { [weak self] _ in
-                self?.runAutoScan()
-            }
-        }
-    }
 }
 
 struct MenuBarView: View {
-    @StateObject private var networkService = NetworkService()
+    @ObservedObject private var networkService = NetworkService.shared
     @ObservedObject private var vpnDetector = VPNDetector.shared
-    @ObservedObject private var scanService = ScanService.shared
-    @StateObject private var firewallService = FirewallService()
 
     var body: some View {
-        VStack(spacing: 10) {
-            // Header with security score
-            HStack(spacing: 10) {
-                // Security score circle
-                ZStack {
-                    Circle()
-                        .stroke(scanService.scoreColor.opacity(0.2), lineWidth: 4)
-                        .frame(width: 40, height: 40)
-                    Circle()
-                        .trim(from: 0, to: CGFloat(scanService.securityScore) / 100.0)
-                        .stroke(scanService.scoreColor, style: StrokeStyle(lineWidth: 4, lineCap: .round))
-                        .frame(width: 40, height: 40)
-                        .rotationEffect(.degrees(-90))
-                    Text("\(scanService.securityScore)")
-                        .font(.system(.caption, design: .rounded).bold())
-                        .foregroundColor(scanService.scoreColor)
-                }
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Security: \(scanService.scoreLabel)")
-                        .font(.headline)
-                    if let lastScan = scanService.lastScanDate {
-                        Text("Scanned \(lastScan, style: .relative) ago")
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
-                    } else {
-                        Text("No scan yet")
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
-                    }
-                }
+        VStack(spacing: 12) {
+            // Header
+            HStack {
+                Image(systemName: "shield.lefthalf.filled")
+                    .foregroundColor(.blue)
+                    .font(.title2)
+                Text("Privacy Dashboard")
+                    .font(.headline)
                 Spacer()
             }
 
             Divider()
 
-            // Status rows -- compact grid
-            VStack(spacing: 6) {
-                // VPN
-                MenuBarStatusRow(
-                    icon: vpnDetector.isVPNActive ? "lock.shield.fill" : "lock.shield",
-                    label: "VPN",
-                    value: vpnDetector.isVPNActive ? "Connected" : "Off",
-                    color: vpnDetector.isVPNActive ? .green : .orange
-                )
-
-                // Firewall
-                MenuBarStatusRow(
-                    icon: firewallService.status.isEnabled ? "flame.fill" : "flame",
-                    label: "Firewall",
-                    value: firewallService.status.isEnabled ? "Enabled" : "Disabled",
-                    color: firewallService.status.isEnabled ? .green : .red
-                )
-
-                // Network
-                MenuBarStatusRow(
-                    icon: "network",
-                    label: "Network",
-                    value: networkService.networkStatus == .connected ? "Online" : "Offline",
-                    color: networkService.networkStatus == .connected ? .green : .red
-                )
-
-                // Active connections
-                MenuBarStatusRow(
-                    icon: "point.3.connected.trianglepath.dotted",
-                    label: "Connections",
-                    value: "\(networkService.networkStats.activeConnectionsCount)",
-                    color: .blue
-                )
+            // VPN Status Indicator
+            HStack {
+                Label("VPN", systemImage: vpnDetector.isVPNActive ? "lock.shield.fill" : "lock.shield")
+                    .font(.subheadline)
+                Spacer()
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(vpnDetector.isVPNActive ? Color.green : Color.orange)
+                        .frame(width: 8, height: 8)
+                    Text(vpnDetector.isVPNActive ? "Connected" : "Not Connected")
+                        .font(.caption)
+                        .foregroundColor(vpnDetector.isVPNActive ? .green : .orange)
+                }
             }
 
             Divider()
 
-            // Download / Upload speeds
+            // Network Status
             HStack {
-                HStack(spacing: 4) {
-                    Image(systemName: "arrow.down.circle.fill")
-                        .foregroundColor(.green)
+                VStack(alignment: .leading, spacing: 4) {
+                    Label("Network", systemImage: "network")
+                        .font(.subheadline)
+                    Text(networkService.networkStatus.description)
                         .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                Spacer()
+                Circle()
+                    .fill(networkService.networkStatus == .connected ? Color.green : Color.red)
+                    .frame(width: 8, height: 8)
+            }
+
+            // Network Stats
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Download")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
                     Text(networkService.networkStats.formattedDownloadSpeed)
                         .font(.system(.caption, design: .monospaced))
                 }
                 Spacer()
-                HStack(spacing: 4) {
-                    Image(systemName: "arrow.up.circle.fill")
-                        .foregroundColor(.blue)
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text("Upload")
                         .font(.caption)
+                        .foregroundColor(.secondary)
                     Text(networkService.networkStats.formattedUploadSpeed)
                         .font(.system(.caption, design: .monospaced))
                 }
             }
 
-            // Threat summary if there are issues
-            if !scanService.lastScanThreats.isEmpty {
-                Divider()
-                HStack(spacing: 6) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundColor(.yellow)
-                        .font(.caption)
-                    Text("\(scanService.lastScanThreats.count) issue(s) detected")
-                        .font(.caption)
-                        .foregroundColor(.yellow)
-                    Spacer()
-                }
+            HStack {
+                Text("Connections")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                Spacer()
+                Text("\(networkService.networkStats.activeConnectionsCount)")
+                    .font(.system(.caption, design: .monospaced))
             }
 
             Divider()
 
-            Button(action: {
+            // Quick Security Status
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Security Status")
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+
+                HStack(spacing: 8) {
+                    Image(systemName: vpnDetector.isVPNActive ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                        .foregroundColor(vpnDetector.isVPNActive ? .green : .yellow)
+                        .font(.caption)
+                    Text(vpnDetector.isVPNActive ? "Traffic encrypted via VPN" : "No VPN detected")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
+                HStack(spacing: 8) {
+                    Image(systemName: networkService.networkStatus == .connected ? "checkmark.circle.fill" : "xmark.circle.fill")
+                        .foregroundColor(networkService.networkStatus == .connected ? .green : .red)
+                        .font(.caption)
+                    Text(networkService.networkStatus == .connected ? "Network active" : "Network offline")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Divider()
+
+            Button("Open Dashboard") {
                 NSApp.activate(ignoringOtherApps: true)
                 if let window = NSApp.windows.first(where: { $0.title.contains("Privacy") || $0.isKeyWindow }) {
                     window.makeKeyAndOrderFront(nil)
                 } else {
                     NSApp.windows.first?.makeKeyAndOrderFront(nil)
                 }
-            }) {
-                Label("Open Dashboard", systemImage: "shield.lefthalf.filled")
-                    .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
-            .controlSize(.small)
+            .frame(maxWidth: .infinity)
 
-            Button(action: { NSApp.terminate(nil) }) {
-                Text("Quit")
-                    .frame(maxWidth: .infinity)
+            Button("Quit") {
+                NSApp.terminate(nil)
             }
             .buttonStyle(.bordered)
-            .controlSize(.small)
+            .frame(maxWidth: .infinity)
         }
-        .padding(12)
-        .onAppear { networkService.startMonitoring() }
-        .onDisappear { networkService.stopMonitoring() }
-    }
-}
-
-/// A compact status row for the menu bar popover.
-struct MenuBarStatusRow: View {
-    let icon: String
-    let label: String
-    let value: String
-    let color: Color
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: icon)
-                .foregroundColor(color)
-                .font(.caption)
-                .frame(width: 16)
-            Text(label)
-                .font(.caption)
-                .foregroundColor(.secondary)
-            Spacer()
-            HStack(spacing: 4) {
-                Circle()
-                    .fill(color)
-                    .frame(width: 6, height: 6)
-                Text(value)
-                    .font(.system(.caption, design: .monospaced))
-            }
-        }
+        .padding()
+        // W6: Network monitoring is started once at app launch via AppDelegate
     }
 }

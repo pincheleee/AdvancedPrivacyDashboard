@@ -1,11 +1,20 @@
 import Foundation
 import SQLite3
+import Security
 
 class PersistenceManager {
     static let shared = PersistenceManager()
 
     private var db: OpaquePointer?
     private let dbPath: String
+    /// Serial queue to serialize all SQLite access and prevent concurrent corruption (W2).
+    private let dbQueue = DispatchQueue(label: "com.privacydashboard.db", qos: .utility)
+
+    /// Whitelist of tables that can be exported (C5 -- prevents SQL injection).
+    private static let exportableTables: Set<String> = [
+        "dns_query_log", "breach_history", "threat_log",
+        "network_traffic_history", "firewall_rules"
+    ]
 
     private init() {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
@@ -26,7 +35,6 @@ class PersistenceManager {
         if sqlite3_open(dbPath, &db) != SQLITE_OK {
             print("PersistenceManager: Failed to open database at \(dbPath)")
         }
-        // Enable WAL mode for better concurrent performance
         execute("PRAGMA journal_mode=WAL;")
     }
 
@@ -117,10 +125,51 @@ class PersistenceManager {
             );
         """)
 
-        // Index for common queries
         execute("CREATE INDEX IF NOT EXISTS idx_dns_timestamp ON dns_query_log(timestamp);")
         execute("CREATE INDEX IF NOT EXISTS idx_traffic_timestamp ON network_traffic_history(timestamp);")
         execute("CREATE INDEX IF NOT EXISTS idx_breach_email ON breach_history(email);")
+    }
+
+    // MARK: - Keychain (C2 -- store API keys securely)
+
+    private static let keychainService = "com.privacydashboard.apikeys"
+
+    func saveKeychainValue(key: String, value: String) {
+        let data = Data(value.utf8)
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: Self.keychainService,
+            kSecAttrAccount as String: key,
+        ]
+        // Delete existing, then add
+        SecItemDelete(query as CFDictionary)
+
+        var addQuery = query
+        addQuery[kSecValueData as String] = data
+        SecItemAdd(addQuery as CFDictionary, nil)
+    }
+
+    func getKeychainValue(key: String) -> String? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: Self.keychainService,
+            kSecAttrAccount as String: key,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        var result: AnyObject?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        guard status == errSecSuccess, let data = result as? Data else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    func deleteKeychainValue(key: String) {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: Self.keychainService,
+            kSecAttrAccount as String: key,
+        ]
+        SecItemDelete(query as CFDictionary)
     }
 
     // MARK: - Settings
@@ -131,16 +180,18 @@ class PersistenceManager {
     }
 
     func getSetting(key: String) -> String? {
-        var stmt: OpaquePointer?
-        defer { sqlite3_finalize(stmt) }
+        return dbQueue.sync {
+            var stmt: OpaquePointer?
+            defer { sqlite3_finalize(stmt) }
 
-        guard sqlite3_prepare_v2(db, "SELECT value FROM settings WHERE key = ?;", -1, &stmt, nil) == SQLITE_OK else { return nil }
-        sqlite3_bind_text(stmt, 1, (key as NSString).utf8String, -1, nil)
+            guard sqlite3_prepare_v2(db, "SELECT value FROM settings WHERE key = ?;", -1, &stmt, nil) == SQLITE_OK else { return nil }
+            sqlite3_bind_text(stmt, 1, (key as NSString).utf8String, -1, Self.sqliteTransient)
 
-        if sqlite3_step(stmt) == SQLITE_ROW {
-            return String(cString: sqlite3_column_text(stmt, 0))
+            if sqlite3_step(stmt) == SQLITE_ROW {
+                return String(cString: sqlite3_column_text(stmt, 0))
+            }
+            return nil
         }
-        return nil
     }
 
     func getBoolSetting(key: String, defaultValue: Bool = false) -> Bool {
@@ -169,32 +220,34 @@ class PersistenceManager {
     }
 
     func loadFirewallRules() -> [FirewallRule] {
-        var rules: [FirewallRule] = []
-        var stmt: OpaquePointer?
-        defer { sqlite3_finalize(stmt) }
+        return dbQueue.sync {
+            var rules: [FirewallRule] = []
+            var stmt: OpaquePointer?
+            defer { sqlite3_finalize(stmt) }
 
-        guard sqlite3_prepare_v2(db, "SELECT id, name, direction, action, protocol, port, source, destination, is_enabled, created_at FROM firewall_rules ORDER BY created_at DESC;", -1, &stmt, nil) == SQLITE_OK else { return [] }
+            guard sqlite3_prepare_v2(db, "SELECT id, name, direction, action, protocol, port, source, destination, is_enabled, created_at FROM firewall_rules ORDER BY created_at DESC;", -1, &stmt, nil) == SQLITE_OK else { return [] }
 
-        let formatter = ISO8601DateFormatter()
-        while sqlite3_step(stmt) == SQLITE_ROW {
-            let direction = FirewallRule.Direction(rawValue: String(cString: sqlite3_column_text(stmt, 2))) ?? .outbound
-            let action = FirewallRule.Action(rawValue: String(cString: sqlite3_column_text(stmt, 3))) ?? .deny
-            let createdAt = formatter.date(from: String(cString: sqlite3_column_text(stmt, 9))) ?? Date()
+            let formatter = ISO8601DateFormatter()
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                let direction = FirewallRule.Direction(rawValue: String(cString: sqlite3_column_text(stmt, 2))) ?? .outbound
+                let action = FirewallRule.Action(rawValue: String(cString: sqlite3_column_text(stmt, 3))) ?? .deny
+                let createdAt = formatter.date(from: String(cString: sqlite3_column_text(stmt, 9))) ?? Date()
 
-            let rule = FirewallRule(
-                name: String(cString: sqlite3_column_text(stmt, 1)),
-                direction: direction,
-                action: action,
-                protocol_: String(cString: sqlite3_column_text(stmt, 4)),
-                port: String(cString: sqlite3_column_text(stmt, 5)),
-                source: String(cString: sqlite3_column_text(stmt, 6)),
-                destination: String(cString: sqlite3_column_text(stmt, 7)),
-                isEnabled: sqlite3_column_int(stmt, 8) == 1,
-                createdAt: createdAt
-            )
-            rules.append(rule)
+                let rule = FirewallRule(
+                    name: String(cString: sqlite3_column_text(stmt, 1)),
+                    direction: direction,
+                    action: action,
+                    protocol_: String(cString: sqlite3_column_text(stmt, 4)),
+                    port: String(cString: sqlite3_column_text(stmt, 5)),
+                    source: String(cString: sqlite3_column_text(stmt, 6)),
+                    destination: String(cString: sqlite3_column_text(stmt, 7)),
+                    isEnabled: sqlite3_column_int(stmt, 8) == 1,
+                    createdAt: createdAt
+                )
+                rules.append(rule)
+            }
+            return rules
         }
-        return rules
     }
 
     func deleteFirewallRule(id: String) {
@@ -212,29 +265,33 @@ class PersistenceManager {
     }
 
     func loadBlocklist() -> Set<String> {
-        var domains = Set<String>()
-        var stmt: OpaquePointer?
-        defer { sqlite3_finalize(stmt) }
+        return dbQueue.sync {
+            var domains = Set<String>()
+            var stmt: OpaquePointer?
+            defer { sqlite3_finalize(stmt) }
 
-        guard sqlite3_prepare_v2(db, "SELECT domain FROM dns_blocklist;", -1, &stmt, nil) == SQLITE_OK else { return [] }
+            guard sqlite3_prepare_v2(db, "SELECT domain FROM dns_blocklist;", -1, &stmt, nil) == SQLITE_OK else { return [] }
 
-        while sqlite3_step(stmt) == SQLITE_ROW {
-            domains.insert(String(cString: sqlite3_column_text(stmt, 0)))
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                domains.insert(String(cString: sqlite3_column_text(stmt, 0)))
+            }
+            return domains
         }
-        return domains
     }
 
     func importBlocklist(_ domains: [String], source: String) -> Int {
-        var count = 0
-        execute("BEGIN TRANSACTION;")
-        for domain in domains {
-            let trimmed = domain.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            guard !trimmed.isEmpty, !trimmed.hasPrefix("#"), trimmed.contains(".") else { continue }
-            execute("INSERT OR IGNORE INTO dns_blocklist (domain, source) VALUES (?, ?);", params: [trimmed, source])
-            count += 1
+        return dbQueue.sync {
+            var count = 0
+            executeUnsafe("BEGIN TRANSACTION;")
+            for domain in domains {
+                let trimmed = domain.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                guard !trimmed.isEmpty, !trimmed.hasPrefix("#"), trimmed.contains(".") else { continue }
+                executeUnsafe("INSERT OR IGNORE INTO dns_blocklist (domain, source) VALUES (?, ?);", params: [trimmed, source])
+                count += 1
+            }
+            executeUnsafe("COMMIT;")
+            return count
         }
-        execute("COMMIT;")
-        return count
     }
 
     // MARK: - DNS Query Log
@@ -245,33 +302,34 @@ class PersistenceManager {
             VALUES (datetime('now'), ?, ?, ?, ?, ?, ?);
         """, params: [domain, queryType, responseIP, process, isBlocked ? "1" : "0", isSuspicious ? "1" : "0"])
 
-        // Prune old entries (keep last 10000)
         execute("DELETE FROM dns_query_log WHERE id NOT IN (SELECT id FROM dns_query_log ORDER BY id DESC LIMIT 10000);")
     }
 
     func getDNSQueryCount(since: TimeInterval = 86400) -> (total: Int, blocked: Int, suspicious: Int) {
-        var total = 0, blocked = 0, suspicious = 0
-        var stmt: OpaquePointer?
-        defer { sqlite3_finalize(stmt) }
+        return dbQueue.sync {
+            var total = 0, blocked = 0, suspicious = 0
+            var stmt: OpaquePointer?
+            defer { sqlite3_finalize(stmt) }
 
-        let sql = """
-            SELECT
-                COUNT(*),
-                SUM(CASE WHEN is_blocked = 1 THEN 1 ELSE 0 END),
-                SUM(CASE WHEN is_suspicious = 1 THEN 1 ELSE 0 END)
-            FROM dns_query_log
-            WHERE timestamp > datetime('now', ?);
-        """
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return (0, 0, 0) }
-        let interval = "-\(Int(since)) seconds"
-        sqlite3_bind_text(stmt, 1, (interval as NSString).utf8String, -1, nil)
+            let sql = """
+                SELECT
+                    COUNT(*),
+                    SUM(CASE WHEN is_blocked = 1 THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN is_suspicious = 1 THEN 1 ELSE 0 END)
+                FROM dns_query_log
+                WHERE timestamp > datetime('now', ?);
+            """
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return (0, 0, 0) }
+            let interval = "-\(Int(since)) seconds"
+            sqlite3_bind_text(stmt, 1, (interval as NSString).utf8String, -1, Self.sqliteTransient)
 
-        if sqlite3_step(stmt) == SQLITE_ROW {
-            total = Int(sqlite3_column_int(stmt, 0))
-            blocked = Int(sqlite3_column_int(stmt, 1))
-            suspicious = Int(sqlite3_column_int(stmt, 2))
+            if sqlite3_step(stmt) == SQLITE_ROW {
+                total = Int(sqlite3_column_int(stmt, 0))
+                blocked = Int(sqlite3_column_int(stmt, 1))
+                suspicious = Int(sqlite3_column_int(stmt, 2))
+            }
+            return (total, blocked, suspicious)
         }
-        return (total, blocked, suspicious)
     }
 
     // MARK: - Network Traffic History
@@ -282,31 +340,32 @@ class PersistenceManager {
             VALUES (datetime('now'), ?, ?);
         """, params: [String(download), String(upload)])
 
-        // Keep last 24 hours
         execute("DELETE FROM network_traffic_history WHERE timestamp < datetime('now', '-1 day');")
     }
 
     func loadTrafficHistory(hours: Int = 1) -> [(timestamp: Date, download: Double, upload: Double)] {
-        var points: [(Date, Double, Double)] = []
-        var stmt: OpaquePointer?
-        defer { sqlite3_finalize(stmt) }
+        return dbQueue.sync {
+            var points: [(Date, Double, Double)] = []
+            var stmt: OpaquePointer?
+            defer { sqlite3_finalize(stmt) }
 
-        let sql = "SELECT timestamp, download_speed, upload_speed FROM network_traffic_history WHERE timestamp > datetime('now', ?) ORDER BY timestamp ASC;"
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
-        let interval = "-\(hours) hours"
-        sqlite3_bind_text(stmt, 1, (interval as NSString).utf8String, -1, nil)
+            let sql = "SELECT timestamp, download_speed, upload_speed FROM network_traffic_history WHERE timestamp > datetime('now', ?) ORDER BY timestamp ASC;"
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+            let interval = "-\(hours) hours"
+            sqlite3_bind_text(stmt, 1, (interval as NSString).utf8String, -1, Self.sqliteTransient)
 
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
 
-        while sqlite3_step(stmt) == SQLITE_ROW {
-            let tsStr = String(cString: sqlite3_column_text(stmt, 0))
-            let dl = sqlite3_column_double(stmt, 1)
-            let ul = sqlite3_column_double(stmt, 2)
-            let date = formatter.date(from: tsStr) ?? Date()
-            points.append((date, dl, ul))
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                let tsStr = String(cString: sqlite3_column_text(stmt, 0))
+                let dl = sqlite3_column_double(stmt, 1)
+                let ul = sqlite3_column_double(stmt, 2)
+                let date = formatter.date(from: tsStr) ?? Date()
+                points.append((date, dl, ul))
+            }
+            return points
         }
-        return points
     }
 
     // MARK: - Breach History
@@ -333,16 +392,18 @@ class PersistenceManager {
     }
 
     func loadMonitoredEmails() -> [String] {
-        var emails: [String] = []
-        var stmt: OpaquePointer?
-        defer { sqlite3_finalize(stmt) }
+        return dbQueue.sync {
+            var emails: [String] = []
+            var stmt: OpaquePointer?
+            defer { sqlite3_finalize(stmt) }
 
-        guard sqlite3_prepare_v2(db, "SELECT email FROM monitored_emails ORDER BY added_at DESC;", -1, &stmt, nil) == SQLITE_OK else { return [] }
+            guard sqlite3_prepare_v2(db, "SELECT email FROM monitored_emails ORDER BY added_at DESC;", -1, &stmt, nil) == SQLITE_OK else { return [] }
 
-        while sqlite3_step(stmt) == SQLITE_ROW {
-            emails.append(String(cString: sqlite3_column_text(stmt, 0)))
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                emails.append(String(cString: sqlite3_column_text(stmt, 0)))
+            }
+            return emails
         }
-        return emails
     }
 
     // MARK: - Threat Log
@@ -355,22 +416,24 @@ class PersistenceManager {
     }
 
     func getRecentThreats(limit: Int = 20) -> [(name: String, description: String, severity: String, date: String)] {
-        var threats: [(String, String, String, String)] = []
-        var stmt: OpaquePointer?
-        defer { sqlite3_finalize(stmt) }
+        return dbQueue.sync {
+            var threats: [(String, String, String, String)] = []
+            var stmt: OpaquePointer?
+            defer { sqlite3_finalize(stmt) }
 
-        guard sqlite3_prepare_v2(db, "SELECT name, description, severity, detected_at FROM threat_log WHERE resolved = 0 ORDER BY detected_at DESC LIMIT ?;", -1, &stmt, nil) == SQLITE_OK else { return [] }
-        sqlite3_bind_int(stmt, 1, Int32(limit))
+            guard sqlite3_prepare_v2(db, "SELECT name, description, severity, detected_at FROM threat_log WHERE resolved = 0 ORDER BY detected_at DESC LIMIT ?;", -1, &stmt, nil) == SQLITE_OK else { return [] }
+            sqlite3_bind_int(stmt, 1, Int32(limit))
 
-        while sqlite3_step(stmt) == SQLITE_ROW {
-            threats.append((
-                String(cString: sqlite3_column_text(stmt, 0)),
-                String(cString: sqlite3_column_text(stmt, 1)),
-                String(cString: sqlite3_column_text(stmt, 2)),
-                String(cString: sqlite3_column_text(stmt, 3))
-            ))
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                threats.append((
+                    String(cString: sqlite3_column_text(stmt, 0)),
+                    String(cString: sqlite3_column_text(stmt, 1)),
+                    String(cString: sqlite3_column_text(stmt, 2)),
+                    String(cString: sqlite3_column_text(stmt, 3))
+                ))
+            }
+            return threats
         }
-        return threats
     }
 
     // MARK: - Data Management
@@ -379,7 +442,6 @@ class PersistenceManager {
         let exportDir = FileManager.default.temporaryDirectory.appendingPathComponent("PrivacyDashboardExport")
         try? FileManager.default.createDirectory(at: exportDir, withIntermediateDirectories: true)
 
-        // Export each table as CSV
         exportTable("dns_query_log", to: exportDir.appendingPathComponent("dns_queries.csv"))
         exportTable("breach_history", to: exportDir.appendingPathComponent("breaches.csv"))
         exportTable("threat_log", to: exportDir.appendingPathComponent("threats.csv"))
@@ -390,41 +452,43 @@ class PersistenceManager {
     }
 
     private func exportTable(_ table: String, to url: URL) {
-        var stmt: OpaquePointer?
-        defer { sqlite3_finalize(stmt) }
+        // C5: Whitelist table names to prevent SQL injection
+        guard Self.exportableTables.contains(table) else { return }
 
-        guard sqlite3_prepare_v2(db, "SELECT * FROM \(table);", -1, &stmt, nil) == SQLITE_OK else { return }
+        dbQueue.sync {
+            var stmt: OpaquePointer?
+            defer { sqlite3_finalize(stmt) }
 
-        var lines: [String] = []
+            guard sqlite3_prepare_v2(db, "SELECT * FROM \(table);", -1, &stmt, nil) == SQLITE_OK else { return }
 
-        // Header
-        let colCount = sqlite3_column_count(stmt)
-        var headers: [String] = []
-        for i in 0..<colCount {
-            headers.append(String(cString: sqlite3_column_name(stmt, i)))
-        }
-        lines.append(headers.joined(separator: ","))
+            var lines: [String] = []
 
-        // Rows
-        while sqlite3_step(stmt) == SQLITE_ROW {
-            var values: [String] = []
+            let colCount = sqlite3_column_count(stmt)
+            var headers: [String] = []
             for i in 0..<colCount {
-                if let text = sqlite3_column_text(stmt, i) {
-                    let val = String(cString: text)
-                    // Escape CSV values with commas or quotes
-                    if val.contains(",") || val.contains("\"") || val.contains("\n") {
-                        values.append("\"\(val.replacingOccurrences(of: "\"", with: "\"\""))\"")
-                    } else {
-                        values.append(val)
-                    }
-                } else {
-                    values.append("")
-                }
+                headers.append(String(cString: sqlite3_column_name(stmt, i)))
             }
-            lines.append(values.joined(separator: ","))
-        }
+            lines.append(headers.joined(separator: ","))
 
-        try? lines.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                var values: [String] = []
+                for i in 0..<colCount {
+                    if let text = sqlite3_column_text(stmt, i) {
+                        let val = String(cString: text)
+                        if val.contains(",") || val.contains("\"") || val.contains("\n") {
+                            values.append("\"\(val.replacingOccurrences(of: "\"", with: "\"\""))\"")
+                        } else {
+                            values.append(val)
+                        }
+                    } else {
+                        values.append("")
+                    }
+                }
+                lines.append(values.joined(separator: ","))
+            }
+
+            try? lines.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
+        }
     }
 
     func clearAllData() {
@@ -444,8 +508,20 @@ class PersistenceManager {
 
     // MARK: - Helpers
 
+    /// SQLITE_TRANSIENT tells SQLite to copy the string immediately (W8 -- prevents use-after-free).
+    private static let sqliteTransient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+
+    /// Thread-safe execute that dispatches to the serial dbQueue.
     @discardableResult
     private func execute(_ sql: String, params: [String] = []) -> Bool {
+        return dbQueue.sync {
+            executeUnsafe(sql, params: params)
+        }
+    }
+
+    /// Internal execute -- caller must already be on dbQueue.
+    @discardableResult
+    private func executeUnsafe(_ sql: String, params: [String] = []) -> Bool {
         var stmt: OpaquePointer?
         defer { sqlite3_finalize(stmt) }
 
@@ -454,7 +530,7 @@ class PersistenceManager {
         }
 
         for (index, param) in params.enumerated() {
-            sqlite3_bind_text(stmt, Int32(index + 1), (param as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(stmt, Int32(index + 1), (param as NSString).utf8String, -1, Self.sqliteTransient)
         }
 
         return sqlite3_step(stmt) == SQLITE_DONE

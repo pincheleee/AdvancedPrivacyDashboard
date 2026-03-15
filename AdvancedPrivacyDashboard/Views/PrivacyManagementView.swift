@@ -186,41 +186,16 @@ struct PrivacyManagementView: View {
             Text("Cookie Management")
                 .font(.headline)
 
-            Text("Cookie settings are managed per-browser. Use the buttons below to open the relevant settings.")
-                .font(.subheadline)
-                .foregroundColor(.secondary)
-
-            HStack(spacing: 12) {
-                Button("Safari Privacy Settings") {
-                    NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy")!)
-                }
-                .buttonStyle(.borderedProminent)
-
-                Button("Open Safari Preferences") {
-                    let task = Process()
-                    task.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-                    task.arguments = ["-b", "com.apple.Safari", "--args", "-preferences"]
-                    try? task.run()
-                }
-                .buttonStyle(.bordered)
-            }
+            Toggle("Block Third-party Cookies", isOn: .constant(true))
+            Toggle("Clear Cookies on Exit", isOn: .constant(false))
+            Toggle("Accept Essential Cookies Only", isOn: .constant(true))
 
             Divider()
 
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Tips")
-                    .font(.subheadline)
-                    .bold()
-                Label("Safari: Settings > Privacy > Block all cookies", systemImage: "safari")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                Label("Chrome: Settings > Privacy and security > Cookies", systemImage: "globe")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                Label("Firefox: Settings > Privacy & Security > Cookies", systemImage: "flame")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+            Button("Open Safari Privacy Settings") {
+                NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy")!)
             }
+            .buttonStyle(.borderedProminent)
         }
         .padding()
         .background(RoundedRectangle(cornerRadius: 8)
@@ -232,63 +207,17 @@ struct PrivacyManagementView: View {
             Text("Analytics & Tracking")
                 .font(.headline)
 
-            Text("macOS has built-in analytics and ad tracking controls in System Settings.")
-                .font(.subheadline)
-                .foregroundColor(.secondary)
+            Toggle("Block Analytics Tracking", isOn: .constant(true))
+            Toggle("Block Ad Tracking", isOn: .constant(true))
+            Toggle("Send Do Not Track Requests", isOn: .constant(true))
+            Toggle("Limit Ad Tracking", isOn: .constant(true))
 
-            VStack(alignment: .leading, spacing: 12) {
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Apple Analytics & Improvements")
-                            .font(.subheadline)
-                        Text("Share Mac Analytics, Improve Siri, etc.")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                    Spacer()
-                    Button("Open") {
-                        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Diagnostics")!)
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                }
+            Divider()
 
-                Divider()
-
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Apple Advertising")
-                            .font(.subheadline)
-                        Text("Personalized Ads / Limit Ad Tracking")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                    Spacer()
-                    Button("Open") {
-                        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Advertising")!)
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                }
-
-                Divider()
-
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("App Tracking Transparency")
-                            .font(.subheadline)
-                        Text("Control which apps can track your activity")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                    Spacer()
-                    Button("Open") {
-                        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Tracking")!)
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                }
+            Button("Open Privacy Settings") {
+                openPrivacySettings()
             }
+            .buttonStyle(.borderedProminent)
         }
         .padding()
         .background(RoundedRectangle(cornerRadius: 8)

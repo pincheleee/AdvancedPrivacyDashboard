@@ -7,6 +7,7 @@ struct ThreatDetectionView: View {
     @State private var threats: [Threat] = []
     @State private var lastScanDate: Date?
     @State private var historicalThreats: [(name: String, description: String, severity: String, date: String)] = []
+    @State private var currentCheckName: String = ""
 
     var body: some View {
         ScrollView {
@@ -96,7 +97,7 @@ struct ThreatDetectionView: View {
                         .font(.system(.caption, design: .monospaced))
                         .foregroundColor(.secondary)
 
-                    Text(scanStage)
+                    Text(currentCheckName.isEmpty ? scanStage : currentCheckName)
                         .font(.caption)
                         .foregroundColor(.secondary)
                 } else if let lastScan = lastScanDate {
@@ -121,11 +122,14 @@ struct ThreatDetectionView: View {
 
     private var scanStage: String {
         switch scanProgress {
-        case 0..<0.2: return "Checking system files..."
-        case 0.2..<0.4: return "Scanning applications..."
-        case 0.4..<0.6: return "Analyzing network connections..."
-        case 0.6..<0.8: return "Checking for vulnerabilities..."
-        case 0.8..<1.0: return "Generating report..."
+        case 0..<0.15: return "Checking SIP status..."
+        case 0.15..<0.30: return "Checking Gatekeeper..."
+        case 0.30..<0.45: return "Checking FileVault..."
+        case 0.45..<0.60: return "Checking SSH / Remote Login..."
+        case 0.60..<0.75: return "Checking Firewall..."
+        case 0.75..<0.85: return "Scanning network connections..."
+        case 0.85..<0.95: return "Checking file permissions..."
+        case 0.95..<1.0: return "Checking screen lock..."
         default: return "Complete"
         }
     }
@@ -249,6 +253,7 @@ struct ThreatDetectionView: View {
         scanProgress = 0.0
         scanComplete = false
         threats.removeAll()
+        currentCheckName = ""
 
         ScanService.shared.runScan { detected in
             isScanning = false
@@ -259,7 +264,7 @@ struct ThreatDetectionView: View {
                 threats = detected
             }
 
-            // Log threats to persistence and send notifications
+            // W3: Log to persistence only here; notification no longer double-logs
             for threat in detected {
                 PersistenceManager.shared.logThreat(
                     name: threat.name,

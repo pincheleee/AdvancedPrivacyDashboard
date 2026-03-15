@@ -6,13 +6,6 @@ struct SettingsView: View {
     @State private var notificationsEnabled = true
     @State private var autoScanEnabled = true
     @State private var scanInterval = 24.0
-    @State private var deepScanEnabled = true
-    @State private var networkAnalysisEnabled = true
-    @State private var dnsMonitoringEnabled = true
-    @State private var backgroundAppsEnabled = true
-    @State private var autoCheckUpdates = true
-    @State private var autoDownloadUpdates = false
-    @State private var updateChannel = 0
     @State private var dataRetentionDays = 30.0
     @State private var selectedTheme = Theme.system
     @State private var launchAtLogin = false
@@ -111,19 +104,6 @@ struct SettingsView: View {
         // Load launch at login state
         if #available(macOS 13.0, *) {
             launchAtLogin = SMAppService.mainApp.status == .enabled
-        }
-
-        // Load scan option toggles
-        deepScanEnabled = pm.getBoolSetting(key: "deepScanEnabled", defaultValue: true)
-        networkAnalysisEnabled = pm.getBoolSetting(key: "networkAnalysisEnabled", defaultValue: true)
-        dnsMonitoringEnabled = pm.getBoolSetting(key: "dnsMonitoringEnabled", defaultValue: true)
-        backgroundAppsEnabled = pm.getBoolSetting(key: "backgroundAppsEnabled", defaultValue: true)
-
-        // Load update settings
-        autoCheckUpdates = pm.getBoolSetting(key: "autoCheckUpdates", defaultValue: true)
-        autoDownloadUpdates = pm.getBoolSetting(key: "autoDownloadUpdates", defaultValue: false)
-        if let channelStr = pm.getSetting(key: "updateChannel"), let ch = Int(channelStr) {
-            updateChannel = ch
         }
 
         // Load notification category toggles
@@ -265,22 +245,10 @@ struct SettingsView: View {
             }
 
             SettingsGroup(title: "Scan Options") {
-                Toggle("Deep System Scan", isOn: $deepScanEnabled)
-                    .onChange(of: deepScanEnabled) { newValue in
-                        PersistenceManager.shared.saveSetting(key: "deepScanEnabled", value: newValue ? "true" : "false")
-                    }
-                Toggle("Network Analysis", isOn: $networkAnalysisEnabled)
-                    .onChange(of: networkAnalysisEnabled) { newValue in
-                        PersistenceManager.shared.saveSetting(key: "networkAnalysisEnabled", value: newValue ? "true" : "false")
-                    }
-                Toggle("DNS Monitoring", isOn: $dnsMonitoringEnabled)
-                    .onChange(of: dnsMonitoringEnabled) { newValue in
-                        PersistenceManager.shared.saveSetting(key: "dnsMonitoringEnabled", value: newValue ? "true" : "false")
-                    }
-                Toggle("Background Apps", isOn: $backgroundAppsEnabled)
-                    .onChange(of: backgroundAppsEnabled) { newValue in
-                        PersistenceManager.shared.saveSetting(key: "backgroundAppsEnabled", value: newValue ? "true" : "false")
-                    }
+                Toggle("Deep System Scan", isOn: .constant(true))
+                Toggle("Network Analysis", isOn: .constant(true))
+                Toggle("DNS Monitoring", isOn: .constant(true))
+                Toggle("Background Apps", isOn: .constant(true))
             }
         }
     }
@@ -388,25 +356,16 @@ struct SettingsView: View {
             }
 
             SettingsGroup(title: "Software Updates") {
-                Toggle("Check for Updates Automatically", isOn: $autoCheckUpdates)
-                    .onChange(of: autoCheckUpdates) { newValue in
-                        PersistenceManager.shared.saveSetting(key: "autoCheckUpdates", value: newValue ? "true" : "false")
-                    }
-                Toggle("Download Updates Automatically", isOn: $autoDownloadUpdates)
-                    .onChange(of: autoDownloadUpdates) { newValue in
-                        PersistenceManager.shared.saveSetting(key: "autoDownloadUpdates", value: newValue ? "true" : "false")
-                    }
+                Toggle("Check for Updates Automatically", isOn: .constant(true))
+                Toggle("Download Updates Automatically", isOn: .constant(true))
             }
 
             SettingsGroup(title: "Update Channel") {
-                Picker("Channel", selection: $updateChannel) {
+                Picker("Channel", selection: .constant(0)) {
                     Text("Stable").tag(0)
                     Text("Beta").tag(1)
                 }
                 .pickerStyle(.segmented)
-                .onChange(of: updateChannel) { newValue in
-                    PersistenceManager.shared.saveSetting(key: "updateChannel", value: String(newValue))
-                }
             }
 
             Button(action: {
@@ -442,15 +401,13 @@ struct SettingsView: View {
                 LabeledContent("Processors") { Text("\(ProcessInfo.processInfo.processorCount) cores") }
             }
 
-            SettingsGroup(title: "Links") {
-                Button("GitHub Repository") {
-                    NSWorkspace.shared.open(URL(string: "https://github.com/pincheleee/AdvancedPrivacyDashboard")!)
-                }
-                .buttonStyle(.link)
-                Button("Report an Issue") {
-                    NSWorkspace.shared.open(URL(string: "https://github.com/pincheleee/AdvancedPrivacyDashboard/issues")!)
-                }
-                .buttonStyle(.link)
+            SettingsGroup(title: "Legal") {
+                Button("Privacy Policy") {}
+                    .buttonStyle(.link)
+                Button("Terms of Service") {}
+                    .buttonStyle(.link)
+                Button("Open Source Licenses") {}
+                    .buttonStyle(.link)
             }
         }
     }

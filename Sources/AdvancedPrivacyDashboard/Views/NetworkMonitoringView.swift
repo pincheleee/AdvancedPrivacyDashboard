@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct NetworkMonitoringView: View {
-    @StateObject private var networkService = NetworkService()
+    @ObservedObject private var networkService = NetworkService.shared
     @ObservedObject private var vpnDetector = VPNDetector.shared
     @ObservedObject private var geoIPService = GeoIPService.shared
     @State private var selectedTimeRange: TimeRange = .hour
@@ -174,13 +174,11 @@ struct NetworkMonitoringView: View {
             .padding()
         }
         .onAppear {
-            networkService.startMonitoring()
-            vpnDetector.startMonitoring()
+            // W6: Network monitoring started at app launch via AppDelegate
             updateSecurityThreats()
             threatUpdateTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { _ in
                 updateSecurityThreats()
             }
-            // Save traffic data points to persistence every 30 seconds
             trafficPersistTimer = Timer.scheduledTimer(withTimeInterval: 30.0, repeats: true) { _ in
                 PersistenceManager.shared.saveTrafficDataPoint(
                     download: networkService.networkStats.downloadSpeed,
@@ -189,8 +187,6 @@ struct NetworkMonitoringView: View {
             }
         }
         .onDisappear {
-            networkService.stopMonitoring()
-            vpnDetector.stopMonitoring()
             threatUpdateTimer?.invalidate()
             threatUpdateTimer = nil
             trafficPersistTimer?.invalidate()
@@ -313,8 +309,11 @@ struct NetworkMonitoringView: View {
             Text(error.description)
             Spacer()
             Button("Retry") {
+                // Force a connection refresh
                 networkService.stopMonitoring()
-                networkService.startMonitoring()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    networkService.startMonitoring()
+                }
             }
             .buttonStyle(.bordered)
         }

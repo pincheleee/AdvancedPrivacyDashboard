@@ -264,7 +264,7 @@ struct ThreatDetectionView: View {
                 threats = detected
             }
 
-            // Log threats to persistence and send notifications
+            // W3: Log to persistence only here; notification no longer double-logs
             for threat in detected {
                 PersistenceManager.shared.logThreat(
                     name: threat.name,

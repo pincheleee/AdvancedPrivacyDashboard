@@ -33,6 +33,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Trigger PersistenceManager initialization
         _ = PersistenceManager.shared
 
+        // W6: Start the shared network service once at launch
+        NetworkService.shared.startMonitoring()
+
         setupMenuBar()
     }
 
@@ -63,7 +66,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 struct MenuBarView: View {
-    @StateObject private var networkService = NetworkService()
+    @ObservedObject private var networkService = NetworkService.shared
     @ObservedObject private var vpnDetector = VPNDetector.shared
 
     var body: some View {
@@ -188,7 +191,6 @@ struct MenuBarView: View {
             .frame(maxWidth: .infinity)
         }
         .padding()
-        .onAppear { networkService.startMonitoring() }
-        .onDisappear { networkService.stopMonitoring() }
+        // W6: Network monitoring is started once at app launch via AppDelegate
     }
 }

@@ -46,8 +46,8 @@ class VPNDetector: ObservableObject {
         }
     }
 
+    /// C1: All Process calls read pipe before waitUntilExit.
     private func detectVPN() -> Bool {
-        // Check for VPN interfaces (utun, ipsec, ppp)
         let task = Process()
         let pipe = Pipe()
         task.executableURL = URL(fileURLWithPath: "/sbin/ifconfig")
@@ -57,27 +57,24 @@ class VPNDetector: ObservableObject {
 
         do {
             try task.run()
-            task.waitUntilExit()
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            task.waitUntilExit()
             let output = String(data: data, encoding: .utf8) ?? ""
 
             let interfaces = output.split(separator: " ").map(String.init)
-            let vpnInterfaces = interfaces.filter {
+            let vpnIfaces = interfaces.filter {
                 $0.hasPrefix("utun") || $0.hasPrefix("ipsec") || $0.hasPrefix("ppp")
             }
 
-            // utun0 is often system/iCloud, so check if there's more than utun0
-            // or check if they have assigned IPs
-            for iface in vpnInterfaces {
+            for iface in vpnIfaces {
                 if hasAssignedIP(interface: iface) {
                     return true
                 }
             }
         } catch {
-            // Fallback: check network config
+            // Fallback
         }
 
-        // Also check scutil for VPN configuration
         return checkSCUtilVPN()
     }
 
@@ -91,10 +88,9 @@ class VPNDetector: ObservableObject {
 
         do {
             try task.run()
-            task.waitUntilExit()
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            task.waitUntilExit()
             let output = String(data: data, encoding: .utf8) ?? ""
-            // Check for inet (IPv4) address that isn't link-local
             return output.contains("inet ") && output.contains("UP") && output.contains("RUNNING")
         } catch {
             return false
@@ -111,8 +107,8 @@ class VPNDetector: ObservableObject {
 
         do {
             try task.run()
-            task.waitUntilExit()
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            task.waitUntilExit()
             let output = String(data: data, encoding: .utf8) ?? ""
             return output.contains("Connected")
         } catch {
@@ -131,8 +127,8 @@ class VPNDetector: ObservableObject {
 
         do {
             try task.run()
-            task.waitUntilExit()
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            task.waitUntilExit()
             let output = String(data: data, encoding: .utf8) ?? ""
 
             var currentInterface = ""
@@ -179,8 +175,8 @@ class VPNDetector: ObservableObject {
 
         do {
             try task.run()
-            task.waitUntilExit()
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            task.waitUntilExit()
             let output = String(data: data, encoding: .utf8) ?? ""
 
             for line in output.components(separatedBy: "\n") {
@@ -195,7 +191,6 @@ class VPNDetector: ObservableObject {
             // Silently fail
         }
 
-        // Check for WireGuard (common on utun interfaces)
         if vpnInterfaces.contains(where: { $0.name.hasPrefix("utun") }) {
             return "WireGuard/Tunnel"
         }

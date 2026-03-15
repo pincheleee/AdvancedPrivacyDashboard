@@ -12,7 +12,8 @@ class FirewallService: ObservableObject {
 
     func refreshStatus() {
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            let firewallEnabled = self?.checkFirewallEnabled() ?? false
+            // S1: Use centralized firewall check
+            let firewallEnabled = SystemCommandRunner.isFirewallEnabled()
             let stealthMode = self?.checkStealthMode() ?? false
 
             DispatchQueue.main.async {
@@ -24,25 +25,7 @@ class FirewallService: ObservableObject {
         }
     }
 
-    private func checkFirewallEnabled() -> Bool {
-        let task = Process()
-        let pipe = Pipe()
-        task.executableURL = URL(fileURLWithPath: "/usr/libexec/ApplicationFirewall/socketfilterfw")
-        task.arguments = ["--getglobalstate"]
-        task.standardOutput = pipe
-        task.standardError = FileHandle.nullDevice
-
-        do {
-            try task.run()
-            task.waitUntilExit()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            let output = String(data: data, encoding: .utf8) ?? ""
-            return output.contains("enabled")
-        } catch {
-            return false
-        }
-    }
-
+    /// C1: Reads pipe before waitUntilExit.
     private func checkStealthMode() -> Bool {
         let task = Process()
         let pipe = Pipe()
@@ -53,8 +36,8 @@ class FirewallService: ObservableObject {
 
         do {
             try task.run()
-            task.waitUntilExit()
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            task.waitUntilExit()
             let output = String(data: data, encoding: .utf8) ?? ""
             return output.contains("enabled")
         } catch {
@@ -78,6 +61,7 @@ class FirewallService: ObservableObject {
         }
     }
 
+    /// C1: Reads pipe before waitUntilExit.
     func getBlockedApps() -> [String] {
         let task = Process()
         let pipe = Pipe()
@@ -88,13 +72,12 @@ class FirewallService: ObservableObject {
 
         do {
             try task.run()
-            task.waitUntilExit()
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            task.waitUntilExit()
             let output = String(data: data, encoding: .utf8) ?? ""
             return output.components(separatedBy: "\n")
                 .filter { $0.contains("Block") }
                 .compactMap { line in
-                    // Extract app name from the line
                     let parts = line.split(separator: ":")
                     return parts.first.map { String($0).trimmingCharacters(in: .whitespaces) }
                 }
@@ -103,7 +86,7 @@ class FirewallService: ObservableObject {
         }
     }
 
-    /// Fetch recent pf log entries
+    /// C1: Reads pipe before waitUntilExit.
     func refreshConnectionLog() {
         DispatchQueue.global(qos: .utility).async { [weak self] in
             let task = Process()
@@ -117,8 +100,8 @@ class FirewallService: ObservableObject {
 
             do {
                 try task.run()
-                task.waitUntilExit()
                 let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                task.waitUntilExit()
                 let output = String(data: data, encoding: .utf8) ?? ""
                 let entries = output.components(separatedBy: "\n")
                     .filter { !$0.isEmpty }

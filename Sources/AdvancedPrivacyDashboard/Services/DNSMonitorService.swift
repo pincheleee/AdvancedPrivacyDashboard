@@ -10,6 +10,10 @@ class DNSMonitorService: ObservableObject {
     private var monitorTimer: Timer?
     private var domainCounts: [String: Int] = [:]
     private var seenDomains: Set<String> = []
+    /// W7: Track last-seen time per domain for deterministic deduplication.
+    private var domainLastSeen: [String: Date] = [:]
+    /// Minimum interval before allowing a repeat domain entry.
+    private let deduplicationInterval: TimeInterval = 30.0
 
     private static let defaultBlocklist: Set<String> = [
         "doubleclick.net", "googlesyndication.com", "facebook.com/tr",
@@ -26,7 +30,6 @@ class DNSMonitorService: ObservableObject {
         guard !isMonitoring else { return }
         isMonitoring = true
 
-        // Poll DNS cache and log entries
         refreshDNSData()
         monitorTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
             self?.refreshDNSData()
@@ -53,6 +56,7 @@ class DNSMonitorService: ObservableObject {
         recentQueries.removeAll()
         domainCounts.removeAll()
         seenDomains.removeAll()
+        domainLastSeen.removeAll()
         stats = DNSStats()
     }
 
@@ -66,8 +70,8 @@ class DNSMonitorService: ObservableObject {
         }
     }
 
+    /// C1: Reads pipe before waitUntilExit to prevent deadlock.
     private func fetchDNSCacheEntries() -> [DNSQuery] {
-        // Read from macOS DNS cache using scutil
         let task = Process()
         let pipe = Pipe()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/log")
@@ -79,8 +83,8 @@ class DNSMonitorService: ObservableObject {
 
         do {
             try task.run()
-            task.waitUntilExit()
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            task.waitUntilExit()
             guard let output = String(data: data, encoding: .utf8) else { return [] }
             return parseDNSLog(output)
         } catch {
@@ -93,9 +97,7 @@ class DNSMonitorService: ObservableObject {
         let lines = output.components(separatedBy: "\n")
 
         for line in lines {
-            // Look for DNS resolution patterns
             if line.contains("resolv") || line.contains("dns") || line.contains("query") {
-                // Extract domain names (simplified pattern matching)
                 let words = line.split(separator: " ")
                 for word in words {
                     let w = String(word)
@@ -128,14 +130,20 @@ class DNSMonitorService: ObservableObject {
     }
 
     private func processNewQueries(_ queries: [DNSQuery]) {
+        let now = Date()
         for query in queries {
-            guard !seenDomains.contains(query.domain) || Bool.random() else { continue }
+            // W7: Deterministic deduplication -- allow repeat if enough time has passed
+            if let lastSeen = domainLastSeen[query.domain],
+               now.timeIntervalSince(lastSeen) < deduplicationInterval {
+                continue
+            }
+
+            domainLastSeen[query.domain] = now
             seenDomains.insert(query.domain)
             recentQueries.insert(query, at: 0)
             domainCounts[query.domain, default: 0] += 1
         }
 
-        // Keep only last 200
         if recentQueries.count > 200 {
             recentQueries = Array(recentQueries.prefix(200))
         }

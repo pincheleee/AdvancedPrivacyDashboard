@@ -54,14 +54,20 @@ class NetworkMonitor: ObservableObject {
     }
 
     private func startStatsSampling() {
-        // Get initial byte counts
-        let initial = readSystemNetworkBytes()
-        previousBytesIn = initial.bytesIn
-        previousBytesOut = initial.bytesOut
-        lastUpdateTime = Date()
+        // Get initial byte counts on background thread
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self = self else { return }
+            let initial = self.readSystemNetworkBytes()
+            self.previousBytesIn = initial.bytesIn
+            self.previousBytesOut = initial.bytesOut
+            self.lastUpdateTime = Date()
+        }
 
+        // C4: Timer fires on main thread, but dispatches work to background
         statsTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
-            self?.sampleNetworkStats()
+            DispatchQueue.global(qos: .utility).async {
+                self?.sampleNetworkStats()
+            }
         }
     }
 
@@ -99,7 +105,8 @@ class NetworkMonitor: ObservableObject {
         }
     }
 
-    /// Read real byte counters from the system using netstat
+    /// Read real byte counters from the system using netstat.
+    /// C1/C5: Reads pipe before waitUntilExit to prevent deadlock.
     private func readSystemNetworkBytes() -> (bytesIn: UInt64, bytesOut: UInt64) {
         let task = Process()
         let pipe = Pipe()
@@ -110,8 +117,8 @@ class NetworkMonitor: ObservableObject {
 
         do {
             try task.run()
-            task.waitUntilExit()
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            task.waitUntilExit()
             guard let output = String(data: data, encoding: .utf8) else {
                 return (0, 0)
             }
@@ -128,11 +135,10 @@ class NetworkMonitor: ObservableObject {
         let lines = output.components(separatedBy: "\n")
         for line in lines.dropFirst() {
             let columns = line.split(separator: " ", omittingEmptySubsequences: true)
-            // netstat -ib columns: Name Mtu Network Address Ipkts Ierrs Ibytes Opkts Oerrs Obytes Coll
             guard columns.count >= 10,
                   let name = columns.first,
                   (name.hasPrefix("en") || name.hasPrefix("utun") || name.hasPrefix("lo")),
-                  !name.hasPrefix("lo") // skip loopback
+                  !name.hasPrefix("lo")
             else { continue }
 
             if let bytesIn = UInt64(columns[6]), let bytesOut = UInt64(columns[9]) {
@@ -143,7 +149,8 @@ class NetworkMonitor: ObservableObject {
         return (totalIn, totalOut)
     }
 
-    /// Get active connection count from netstat
+    /// Get active connection count from netstat.
+    /// C1: Reads pipe before waitUntilExit.
     private func getActiveConnectionCount() -> Int {
         let task = Process()
         let pipe = Pipe()
@@ -154,8 +161,8 @@ class NetworkMonitor: ObservableObject {
 
         do {
             try task.run()
-            task.waitUntilExit()
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            task.waitUntilExit()
             guard let output = String(data: data, encoding: .utf8) else { return 0 }
             return output.components(separatedBy: "\n")
                 .filter { $0.contains("ESTABLISHED") }
@@ -166,13 +173,16 @@ class NetworkMonitor: ObservableObject {
     }
 
     private func startPerformanceMonitoring() {
+        // C4: Dispatch work to background
         performanceTimer = Timer.scheduledTimer(withTimeInterval: 10.0, repeats: true) { [weak self] _ in
-            self?.analyzeTrafficPatterns()
+            DispatchQueue.global(qos: .utility).async {
+                self?.analyzeTrafficPatterns()
+            }
         }
     }
 
+    /// C1: Reads pipe before waitUntilExit.
     private func analyzeTrafficPatterns() {
-        // Check for unusual outbound connections
         let task = Process()
         let pipe = Pipe()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/netstat")
@@ -182,14 +192,13 @@ class NetworkMonitor: ObservableObject {
 
         do {
             try task.run()
-            task.waitUntilExit()
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            task.waitUntilExit()
             guard let output = String(data: data, encoding: .utf8) else { return }
 
             let connections = output.components(separatedBy: "\n")
                 .filter { $0.contains("ESTABLISHED") }
 
-            // Flag connections to unusual ports
             let suspiciousPorts = [4444, 5555, 6666, 8888, 31337, 12345]
             for conn in connections {
                 let parts = conn.split(separator: " ", omittingEmptySubsequences: true)
@@ -207,7 +216,6 @@ class NetworkMonitor: ObservableObject {
                         destinationIP: foreignAddr
                     )
                     securityThreats.append(threat)
-                    // Keep only last 50
                     if securityThreats.count > 50 {
                         securityThreats.removeFirst()
                     }

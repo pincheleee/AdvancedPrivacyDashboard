@@ -7,30 +7,32 @@ struct NetworkTrafficPoint: Identifiable {
     let uploadSpeed: Double
 }
 
-class NetworkTrafficHistory: ObservableObject {
-    @Published private(set) var dataPoints: [NetworkTrafficPoint] = []
+/// Changed from ObservableObject to struct to fix nested-ObservableObject issue (W4).
+/// When embedded as @Published inside NetworkService, struct mutations
+/// correctly trigger objectWillChange on the parent.
+struct NetworkTrafficHistory {
+    private(set) var dataPoints: [NetworkTrafficPoint] = []
     private let maxDataPoints: Int
-    
+
     init(maxDataPoints: Int = 60) {
         self.maxDataPoints = maxDataPoints
     }
-    
-    func addDataPoint(download: Double, upload: Double) {
+
+    mutating func addDataPoint(download: Double, upload: Double) {
         let newPoint = NetworkTrafficPoint(
             timestamp: Date(),
             downloadSpeed: download,
             uploadSpeed: upload
         )
-        
+
         dataPoints.append(newPoint)
-        
-        // Keep only the most recent points
+
         if dataPoints.count > maxDataPoints {
             dataPoints.removeFirst(dataPoints.count - maxDataPoints)
         }
     }
-    
-    func clearHistory() {
+
+    mutating func clearHistory() {
         dataPoints.removeAll()
     }
-} 
+}

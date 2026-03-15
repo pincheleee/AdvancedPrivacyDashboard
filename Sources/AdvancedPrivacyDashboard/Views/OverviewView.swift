@@ -2,7 +2,7 @@ import SwiftUI
 import Charts
 
 struct OverviewView: View {
-    @StateObject private var networkService = NetworkService()
+    @ObservedObject private var networkService = NetworkService.shared
     @StateObject private var firewallService = FirewallService()
     @ObservedObject private var vpnDetector = VPNDetector.shared
     @State private var animateCards = false
@@ -115,16 +115,11 @@ struct OverviewView: View {
             .padding(.vertical)
         }
         .onAppear {
-            networkService.startMonitoring()
-            vpnDetector.startMonitoring()
+            // W6: Monitoring started at app launch via AppDelegate
             withAnimation(.easeOut(duration: 0.6)) {
                 animateCards = true
             }
             loadHistoricalData()
-        }
-        .onDisappear {
-            networkService.stopMonitoring()
-            vpnDetector.stopMonitoring()
         }
     }
 

@@ -45,14 +45,7 @@ struct FirewallView: View {
                         title: "Stealth Mode",
                         value: firewallService.status.stealthMode ? "On" : "Off",
                         icon: "eye.slash",
-                        color: firewallService.status.stealthMode ? .green : .yellow,
-                        subtitle: firewallService.status.stealthMode
-                            ? "Hidden from network probes"
-                            : "Firewall > Options > Enable stealth mode",
-                        action: {
-                            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.network?Firewall")!)
-                        },
-                        actionLabel: "Configure"
+                        color: firewallService.status.stealthMode ? .green : .yellow
                     )
                     FirewallStatusCard(
                         title: "Custom Rules",
@@ -76,7 +69,7 @@ struct FirewallView: View {
                             .foregroundColor(.primary)
                         Spacer()
                         Button("Open Settings") {
-                            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.network?Firewall")!)
+                            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Firewall")!)
                         }
                         .buttonStyle(.borderedProminent)
                     }
@@ -87,37 +80,8 @@ struct FirewallView: View {
 
                 // Custom rules
                 VStack(alignment: .leading, spacing: 12) {
-                    HStack {
-                        Text("Custom Rules (pf)")
-                            .font(.headline)
-
-                        Text("Applied via macOS packet filter")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-
-                        Spacer()
-
-                        if !firewallService.rules.isEmpty {
-                            Button(action: {
-                                firewallService.applyRules()
-                            }) {
-                                Label("Apply Rules", systemImage: "checkmark.shield")
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .tint(.green)
-                            .controlSize(.small)
-                        }
-                    }
-
-                    if let error = firewallService.lastPfError {
-                        HStack {
-                            Image(systemName: "exclamationmark.triangle.fill")
-                                .foregroundColor(.red)
-                            Text(error)
-                                .font(.caption)
-                                .foregroundColor(.red)
-                        }
-                    }
+                    Text("Custom Rules")
+                        .font(.headline)
 
                     if firewallService.rules.isEmpty {
                         VStack(spacing: 8) {
@@ -185,7 +149,6 @@ struct FirewallView: View {
                                 Button(action: {
                                     PersistenceManager.shared.deleteFirewallRule(id: rule.id.uuidString)
                                     firewallService.removeRule(rule)
-                                    firewallService.applyRules()
                                 }) {
                                     Image(systemName: "trash")
                                         .foregroundColor(.red)
@@ -299,7 +262,6 @@ struct FirewallView: View {
                     )
                     firewallService.addRule(rule)
                     PersistenceManager.shared.saveFirewallRule(rule)
-                    firewallService.applyRules()
                     resetForm()
                     showAddRule = false
                 }
@@ -327,9 +289,6 @@ struct FirewallStatusCard: View {
     let value: String
     let icon: String
     let color: Color
-    var subtitle: String? = nil
-    var action: (() -> Void)? = nil
-    var actionLabel: String? = nil
 
     var body: some View {
         VStack(spacing: 8) {
@@ -341,18 +300,6 @@ struct FirewallStatusCard: View {
             Text(title)
                 .font(.caption)
                 .foregroundColor(.secondary)
-            if let subtitle = subtitle {
-                Text(subtitle)
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-                    .multilineTextAlignment(.center)
-            }
-            if let action = action, let label = actionLabel {
-                Button(label, action: action)
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .padding(.top, 2)
-            }
         }
         .frame(maxWidth: .infinity)
         .padding()
