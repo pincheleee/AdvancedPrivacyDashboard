@@ -1,4 +1,5 @@
 import SwiftUI
+import Charts
 
 struct DNSMonitoringView: View {
     @StateObject private var dnsService = DNSMonitorService()
@@ -6,9 +7,17 @@ struct DNSMonitoringView: View {
     @State private var showBlocklistEditor = false
     @State private var newBlockDomain = ""
     @State private var filterText = ""
+    @State private var selectedDomain: String?
     @State private var historicalTotal = 0
     @State private var historicalBlocked = 0
     @State private var historicalSuspicious = 0
+
+    // Cached analytics data — updated asynchronously when queries change
+    @State private var cachedQueryTypes: [(type: String, count: Int)] = []
+    @State private var cachedBlockedDomains: [(domain: String, count: Int)] = []
+    @State private var cachedBlockTrend: [(index: Int, rate: Double)] = []
+    /// Track query count to detect actual changes and skip redundant recomputation
+    @State private var lastProcessedQueryCount = 0
 
     var filteredQueries: [DNSQuery] {
         if filterText.isEmpty { return dnsService.recentQueries }
@@ -92,8 +101,11 @@ struct DNSMonitoringView: View {
                     }
                 }
                 .padding()
-                .background(RoundedRectangle(cornerRadius: 10)
+                .background(RoundedRectangle(cornerRadius: 12)
                     .fill(Color(NSColor.controlBackgroundColor)))
+
+                // DNS Analytics Charts
+                dnsAnalyticsSection
 
                 // Blocklist Sources section
                 VStack(alignment: .leading, spacing: 12) {
@@ -193,7 +205,8 @@ struct DNSMonitoringView: View {
 
                             Divider()
 
-                            ForEach(filteredQueries) { query in
+                            LazyVStack(spacing: 0) {
+                            ForEach(filteredQueries.prefix(50)) { query in
                                 HStack {
                                     Text(query.timestamp, style: .time)
                                         .font(.system(.caption2, design: .monospaced))
@@ -226,6 +239,22 @@ struct DNSMonitoringView: View {
                                 }
                                 .padding(.horizontal, 4)
                                 .padding(.vertical, 2)
+                                .background(selectedDomain == query.domain
+                                    ? Color.accentColor.opacity(0.08)
+                                    : Color.clear)
+                                .cornerRadius(4)
+                                .onTapGesture {
+                                    withAnimation(.easeInOut(duration: 0.2)) {
+                                        selectedDomain = selectedDomain == query.domain ? nil : query.domain
+                                    }
+                                }
+                            }
+                            } // LazyVStack
+
+                            // Domain detail panel
+                            if let domain = selectedDomain {
+                                dnsQueryDetailPanel(for: domain)
+                                    .transition(.opacity.combined(with: .move(edge: .top)))
                             }
                         }
                     }
@@ -270,17 +299,23 @@ struct DNSMonitoringView: View {
             }
             .padding()
         }
-        .onAppear {
-            loadPersistedBlocklist()
-            refreshHistoricalStats()
+        .task {
+            // Move persistence calls off the synchronous onAppear path
+            await loadPersistedBlocklistAsync()
+            await refreshHistoricalStatsAsync()
         }
-        .onReceive(dnsService.$recentQueries) { queries in
-            persistNewQueries(queries)
-            refreshHistoricalStats()
+        .onChange(of: dnsService.recentQueries.count) { newCount in
+            // Only refresh analytics when count actually changes (not on every re-render)
+            if newCount != lastProcessedQueryCount {
+                persistNewQueries(dnsService.recentQueries)
+                refreshAnalyticsIfNeeded(dnsService.recentQueries)
+            }
         }
         .onReceive(blocklistImporter.$lastImportCount) { count in
             if count > 0 {
-                loadPersistedBlocklist()
+                Task {
+                    await loadPersistedBlocklistAsync()
+                }
             }
         }
         .sheet(isPresented: $showBlocklistEditor) {
@@ -288,17 +323,302 @@ struct DNSMonitoringView: View {
         }
     }
 
+    // MARK: - DNS Query Detail Panel
+
+    private func dnsQueryDetailPanel(for domain: String) -> some View {
+        let domainQueries = dnsService.recentQueries.filter { $0.domain == domain }
+        let queryCount = domainQueries.count
+        let firstSeen = domainQueries.last?.timestamp
+        let lastSeen = domainQueries.first?.timestamp
+        let isBlocked = dnsService.blocklist.contains(where: { domain.contains($0) })
+        let isSuspicious = domainQueries.first?.isSuspicious ?? false
+
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Image(systemName: "globe")
+                    .foregroundColor(.accentColor)
+                    .font(.title3)
+                Text("Domain Details")
+                    .font(.headline)
+                Spacer()
+                Button(action: { selectedDomain = nil }) {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(.borderless)
+            }
+
+            // Domain name
+            Text(domain)
+                .font(.system(.title3, design: .monospaced))
+                .textSelection(.enabled)
+
+            HStack(spacing: 24) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Queries").font(.caption).foregroundColor(.secondary)
+                    Text("\(queryCount)").font(.headline)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("First Seen").font(.caption).foregroundColor(.secondary)
+                    if let date = firstSeen {
+                        Text(date, style: .time).font(.subheadline)
+                    } else {
+                        Text("--").font(.subheadline)
+                    }
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Last Seen").font(.caption).foregroundColor(.secondary)
+                    if let date = lastSeen {
+                        Text(date, style: .time).font(.subheadline)
+                    } else {
+                        Text("--").font(.subheadline)
+                    }
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Status").font(.caption).foregroundColor(.secondary)
+                    HStack(spacing: 4) {
+                        Circle()
+                            .fill(isBlocked ? Color.red : isSuspicious ? Color.orange : Color.green)
+                            .frame(width: 8, height: 8)
+                        Text(isBlocked ? "Blocked" : isSuspicious ? "Suspicious" : "Allowed")
+                            .font(.subheadline)
+                    }
+                }
+            }
+
+            // Query history
+            if !domainQueries.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Recent Queries").font(.caption).foregroundColor(.secondary)
+                    ForEach(domainQueries.prefix(5)) { q in
+                        HStack {
+                            Text(q.timestamp, style: .time)
+                                .font(.system(.caption2, design: .monospaced))
+                            Text(q.queryType)
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                            if !q.responseIP.isEmpty {
+                                Text("→ \(q.responseIP)")
+                                    .font(.system(.caption2, design: .monospaced))
+                                    .foregroundColor(.secondary)
+                            }
+                            Text(q.process)
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+            }
+
+            HStack(spacing: 12) {
+                if isBlocked {
+                    Button(action: {
+                        dnsService.removeFromBlocklist(domain)
+                        let d = domain
+                        Task.detached(priority: .utility) {
+                            PersistenceManager.shared.removeBlocklistDomain(d)
+                        }
+                    }) {
+                        Label("Unblock", systemImage: "checkmark.shield")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.green)
+                } else {
+                    Button(action: {
+                        dnsService.addToBlocklist(domain)
+                        let d = domain
+                        Task.detached(priority: .utility) {
+                            PersistenceManager.shared.saveBlocklistDomain(d)
+                        }
+                    }) {
+                        Label("Block Domain", systemImage: "hand.raised.fill")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.red)
+                }
+
+                Button(action: {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(domain, forType: .string)
+                }) {
+                    Label("Copy", systemImage: "doc.on.doc")
+                }
+                .buttonStyle(.bordered)
+            }
+        }
+        .padding()
+        .background(RoundedRectangle(cornerRadius: 10)
+            .fill(Color(NSColor.controlBackgroundColor))
+            .shadow(color: .black.opacity(0.05), radius: 4, y: 2))
+        .padding(.vertical, 4)
+    }
+
+    // MARK: - DNS Analytics Charts
+
+    private var dnsAnalyticsSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("DNS Analytics")
+                .font(.headline)
+
+            HStack(alignment: .top, spacing: 16) {
+                // Query type distribution
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Query Types")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+
+                    let typeData = cachedQueryTypes
+                    if typeData.isEmpty {
+                        Text("No data").font(.caption).foregroundColor(.secondary)
+                            .frame(height: 140)
+                    } else {
+                        if #available(macOS 14.0, *) {
+                            Chart(typeData, id: \.type) { item in
+                                SectorMark(
+                                    angle: .value("Count", item.count),
+                                    innerRadius: .ratio(0.5),
+                                    angularInset: 1.5
+                                )
+                                .foregroundStyle(by: .value("Type", item.type))
+                            }
+                            .frame(height: 140)
+                        } else {
+                            Chart(typeData, id: \.type) { item in
+                                BarMark(
+                                    x: .value("Type", item.type),
+                                    y: .value("Count", item.count)
+                                )
+                                .foregroundStyle(by: .value("Type", item.type))
+                            }
+                            .frame(height: 140)
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity)
+
+                // Top blocked domains bar chart
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Top Blocked Domains")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+
+                    let blockedData = cachedBlockedDomains
+                    if blockedData.isEmpty {
+                        Text("No blocked domains").font(.caption).foregroundColor(.secondary)
+                            .frame(height: 140)
+                    } else {
+                        Chart(blockedData, id: \.domain) { item in
+                            BarMark(
+                                x: .value("Count", item.count),
+                                y: .value("Domain", item.domain)
+                            )
+                            .foregroundStyle(Color.red.gradient)
+                        }
+                        .frame(height: 140)
+                    }
+                }
+                .frame(maxWidth: .infinity)
+
+                // Block rate trend (as queries accumulate)
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Block Rate Trend")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+
+                    let trendData = cachedBlockTrend
+                    if trendData.isEmpty {
+                        Text("Collecting data...").font(.caption).foregroundColor(.secondary)
+                            .frame(height: 140)
+                    } else {
+                        Chart(trendData, id: \.index) { point in
+                            LineMark(
+                                x: .value("Sample", point.index),
+                                y: .value("Block %", point.rate)
+                            )
+                            .foregroundStyle(Color.orange.gradient)
+                            .interpolationMethod(.catmullRom)
+
+                            AreaMark(
+                                x: .value("Sample", point.index),
+                                y: .value("Block %", point.rate)
+                            )
+                            .foregroundStyle(Color.orange.opacity(0.1).gradient)
+                            .interpolationMethod(.catmullRom)
+                        }
+                        .chartYScale(domain: 0...100)
+                        .frame(height: 140)
+                    }
+                }
+                .frame(maxWidth: .infinity)
+            }
+        }
+        .padding()
+        .background(RoundedRectangle(cornerRadius: 12)
+            .fill(Color(NSColor.controlBackgroundColor)))
+    }
+
+    /// Recompute analytics data only when the query list actually changes, and do it off the main thread.
+    private func refreshAnalyticsIfNeeded(_ queries: [DNSQuery]) {
+        let count = queries.count
+        guard count != lastProcessedQueryCount else { return }
+        lastProcessedQueryCount = count
+
+        // Snapshot the data we need — avoid capturing the view or service
+        let snapshot = queries
+        Task.detached(priority: .utility) {
+            // Query type distribution
+            var typeCounts: [String: Int] = [:]
+            for q in snapshot { typeCounts[q.queryType, default: 0] += 1 }
+            let types = typeCounts.map { (type: $0.key, count: $0.value) }
+                .sorted { $0.count > $1.count }
+
+            // Top blocked domains
+            var blockedCounts: [String: Int] = [:]
+            for q in snapshot where q.isBlocked { blockedCounts[q.domain, default: 0] += 1 }
+            let blocked = blockedCounts.map { (domain: $0.key, count: $0.value) }
+                .sorted { $0.count > $1.count }
+                .prefix(5)
+                .map { $0 }
+
+            // Block rate trend
+            let reversed = Array(snapshot.reversed())
+            let trend: [(index: Int, rate: Double)] = {
+                guard reversed.count >= 5 else { return [] }
+                let bucketSize = max(1, reversed.count / 10)
+                var result: [(index: Int, rate: Double)] = []
+                for i in stride(from: 0, to: reversed.count, by: bucketSize) {
+                    let end = min(i + bucketSize, reversed.count)
+                    let bucket = reversed[i..<end]
+                    let blockedCount = bucket.filter(\.isBlocked).count
+                    let rate = bucket.isEmpty ? 0 : (Double(blockedCount) / Double(bucket.count)) * 100.0
+                    result.append((index: result.count, rate: rate))
+                }
+                return result
+            }()
+
+            await MainActor.run {
+                cachedQueryTypes = types
+                cachedBlockedDomains = blocked
+                cachedBlockTrend = trend
+            }
+        }
+    }
+
     // MARK: - Persistence Helpers
 
-    private func loadPersistedBlocklist() {
-        let persisted = PersistenceManager.shared.loadBlocklist()
+    private func loadPersistedBlocklistAsync() async {
+        let persisted = await Task.detached(priority: .utility) {
+            PersistenceManager.shared.loadBlocklist()
+        }.value
         for domain in persisted {
             dnsService.blocklist.insert(domain)
         }
     }
 
-    private func refreshHistoricalStats() {
-        let counts = PersistenceManager.shared.getDNSQueryCount()
+    private func refreshHistoricalStatsAsync() async {
+        let counts = await Task.detached(priority: .utility) {
+            PersistenceManager.shared.getDNSQueryCount()
+        }.value
         historicalTotal = counts.total
         historicalBlocked = counts.blocked
         historicalSuspicious = counts.suspicious
@@ -307,14 +627,22 @@ struct DNSMonitoringView: View {
     private func persistNewQueries(_ queries: [DNSQuery]) {
         // Persist only the most recent query to avoid duplicating entire history on every update
         guard let latest = queries.first else { return }
-        PersistenceManager.shared.logDNSQuery(
-            domain: latest.domain,
-            queryType: latest.queryType,
-            responseIP: latest.responseIP,
-            process: latest.process,
-            isBlocked: latest.isBlocked,
-            isSuspicious: latest.isSuspicious
-        )
+        let domain = latest.domain
+        let queryType = latest.queryType
+        let responseIP = latest.responseIP
+        let process = latest.process
+        let isBlocked = latest.isBlocked
+        let isSuspicious = latest.isSuspicious
+        Task.detached(priority: .utility) {
+            PersistenceManager.shared.logDNSQuery(
+                domain: domain,
+                queryType: queryType,
+                responseIP: responseIP,
+                process: process,
+                isBlocked: isBlocked,
+                isSuspicious: isSuspicious
+            )
+        }
     }
 
     // MARK: - Blocklist Sheet
@@ -330,9 +658,12 @@ struct DNSMonitoringView: View {
                     .textFieldStyle(.roundedBorder)
                 Button("Add") {
                     guard !newBlockDomain.isEmpty else { return }
-                    dnsService.addToBlocklist(newBlockDomain)
-                    PersistenceManager.shared.saveBlocklistDomain(newBlockDomain)
+                    let domainToAdd = newBlockDomain
+                    dnsService.addToBlocklist(domainToAdd)
                     newBlockDomain = ""
+                    Task.detached(priority: .utility) {
+                        PersistenceManager.shared.saveBlocklistDomain(domainToAdd)
+                    }
                 }
                 .buttonStyle(.borderedProminent)
             }
@@ -345,7 +676,10 @@ struct DNSMonitoringView: View {
                         Spacer()
                         Button(action: {
                             dnsService.removeFromBlocklist(domain)
-                            PersistenceManager.shared.removeBlocklistDomain(domain)
+                            let d = domain
+                            Task.detached(priority: .utility) {
+                                PersistenceManager.shared.removeBlocklistDomain(d)
+                            }
                         }) {
                             Image(systemName: "xmark.circle.fill")
                                 .foregroundColor(.red)

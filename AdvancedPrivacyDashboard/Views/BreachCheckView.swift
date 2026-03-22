@@ -6,6 +6,10 @@ struct BreachCheckView: View {
     @State private var animateResults = false
     @State private var hibpKeyInput = ""
     @State private var lastCheckedEmail = ""
+    @State private var passwordInput = ""
+    @State private var passwordCheckResult: Int?
+    @State private var isCheckingPassword = false
+    @State private var hasCheckedPassword = false
 
     var body: some View {
         ScrollView {
@@ -74,6 +78,12 @@ struct BreachCheckView: View {
                         .fill(Color.orange.opacity(0.06)))
                 }
 
+                // Password Breach Check
+                passwordCheckSection
+
+                // Breach Monitoring Schedule
+                breachMonitoringSection
+
                 // Search bar
                 HStack {
                     Image(systemName: "envelope")
@@ -94,7 +104,7 @@ struct BreachCheckView: View {
                     .disabled(emailInput.isEmpty || breachService.isLoading)
                 }
                 .padding()
-                .background(RoundedRectangle(cornerRadius: 10)
+                .background(RoundedRectangle(cornerRadius: 12)
                     .fill(Color(NSColor.controlBackgroundColor)))
 
                 // Monitored emails
@@ -110,7 +120,10 @@ struct BreachCheckView: View {
                                         .font(.caption)
                                     Button(action: {
                                         breachService.removeMonitoredEmail(email)
-                                        PersistenceManager.shared.removeMonitoredEmail(email)
+                                        let emailToRemove = email
+                                        Task.detached(priority: .utility) {
+                                            PersistenceManager.shared.removeMonitoredEmail(emailToRemove)
+                                        }
                                     }) {
                                         Image(systemName: "xmark.circle.fill")
                                             .font(.caption2)
@@ -188,43 +201,18 @@ struct BreachCheckView: View {
                     .padding(.vertical, 40)
                 }
 
-                // Recommendations
-                if breachService.status.totalBreaches > 0 {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("Recommendations")
-                            .font(.headline)
-
-                        RecommendationRow(
-                            icon: "key.fill",
-                            title: "Change Compromised Passwords",
-                            description: "Update passwords for all breached services immediately"
-                        )
-                        RecommendationRow(
-                            icon: "lock.rotation",
-                            title: "Enable Two-Factor Authentication",
-                            description: "Add 2FA to all accounts where available"
-                        )
-                        RecommendationRow(
-                            icon: "rectangle.and.pencil.and.ellipsis",
-                            title: "Use Unique Passwords",
-                            description: "Use a password manager to generate unique passwords"
-                        )
-                        RecommendationRow(
-                            icon: "envelope.badge",
-                            title: "Monitor Your Email",
-                            description: "Set up alerts for suspicious login attempts"
-                        )
-                    }
-                    .padding()
-                    .background(RoundedRectangle(cornerRadius: 12)
-                        .fill(Color(NSColor.controlBackgroundColor)))
+                // Breach Remediation Guidance
+                if !breachService.breaches.isEmpty {
+                    breachRemediationSection
                 }
             }
             .padding()
         }
-        .onAppear {
-            // Load persisted monitored emails on appear
-            let savedEmails = PersistenceManager.shared.loadMonitoredEmails()
+        .task {
+            // Load persisted monitored emails off the main thread
+            let savedEmails = await Task.detached(priority: .utility) {
+                PersistenceManager.shared.loadMonitoredEmails()
+            }.value
             for email in savedEmails {
                 if !breachService.status.emailsMonitored.contains(email) {
                     breachService.status.emailsMonitored.append(email)
@@ -237,16 +225,116 @@ struct BreachCheckView: View {
             withAnimation { animateResults = true }
 
             let email = lastCheckedEmail
-            if !breachService.breaches.isEmpty && !email.isEmpty {
-                for breach in breachService.breaches {
-                    PersistenceManager.shared.saveBreachResult(email: email, breach: breach)
+            let breaches = breachService.breaches
+            if !breaches.isEmpty && !email.isEmpty {
+                let breachCount = breaches.count
+                Task.detached(priority: .utility) {
+                    for breach in breaches {
+                        PersistenceManager.shared.saveBreachResult(email: email, breach: breach)
+                    }
                 }
                 NotificationManager.shared.sendBreachAlert(
                     email: email,
-                    breachCount: breachService.breaches.count
+                    breachCount: breachCount
                 )
             }
         }
+    }
+
+    // MARK: - Breach Remediation Guidance
+
+    private var breachRemediationSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Image(systemName: "lifepreserver.fill")
+                    .foregroundColor(.blue)
+                    .font(.title3)
+                Text("Remediation Steps")
+                    .font(.headline)
+                Spacer()
+                Text("Sorted by priority")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+
+            // Sort breaches by severity (critical first)
+            let sortedBreaches = breachService.breaches.sorted { sev($0) > sev($1) }
+
+            ForEach(Array(sortedBreaches.enumerated()), id: \.element.id) { index, breach in
+                RemediationStepRow(
+                    stepNumber: index + 1,
+                    breach: breach,
+                    steps: remediationSteps(for: breach)
+                )
+            }
+
+            // General recommendations
+            VStack(alignment: .leading, spacing: 8) {
+                Text("General Security Measures")
+                    .font(.subheadline)
+                    .bold()
+                    .padding(.top, 8)
+
+                RecommendationRow(
+                    icon: "lock.rotation",
+                    title: "Enable Two-Factor Authentication",
+                    description: "Add 2FA to all accounts, especially those in breaches above"
+                )
+                RecommendationRow(
+                    icon: "rectangle.and.pencil.and.ellipsis",
+                    title: "Use a Password Manager",
+                    description: "Generate unique passwords for every service"
+                )
+                RecommendationRow(
+                    icon: "envelope.badge",
+                    title: "Set Up Login Alerts",
+                    description: "Enable email/SMS alerts for new login attempts"
+                )
+            }
+        }
+        .padding()
+        .background(RoundedRectangle(cornerRadius: 12)
+            .fill(Color(NSColor.controlBackgroundColor)))
+    }
+
+    private func sev(_ breach: BreachResult) -> Int {
+        switch breach.severity {
+        case .critical: return 4
+        case .high: return 3
+        case .medium: return 2
+        case .low: return 1
+        }
+    }
+
+    private func remediationSteps(for breach: BreachResult) -> [String] {
+        var steps: [String] = []
+
+        if breach.dataTypes.contains("Passwords") {
+            steps.append("Change your password for \(breach.serviceName) immediately")
+            steps.append("Change passwords on any other site where you used the same password")
+        }
+
+        if breach.dataTypes.contains("Email addresses") {
+            steps.append("Watch for phishing emails impersonating \(breach.serviceName)")
+        }
+
+        if breach.dataTypes.contains("Phone numbers") {
+            steps.append("Be alert for social engineering calls or SMS phishing")
+        }
+
+        if breach.dataTypes.contains("Credit cards") || breach.dataTypes.contains("Payment information") {
+            steps.append("Contact your bank to replace compromised cards")
+            steps.append("Monitor bank statements for unauthorized charges")
+        }
+
+        if breach.dataTypes.contains("Social security numbers") || breach.dataTypes.contains("Government issued IDs") {
+            steps.append("Place a fraud alert with credit bureaus")
+            steps.append("Consider a credit freeze to prevent identity theft")
+        }
+
+        steps.append("Enable 2FA on your \(breach.serviceName) account if not already active")
+
+        return steps
     }
 
     private func checkEmail() {
@@ -254,10 +342,176 @@ struct BreachCheckView: View {
         animateResults = false
         lastCheckedEmail = emailInput
 
-        // Persist the monitored email
-        PersistenceManager.shared.saveMonitoredEmail(emailInput)
+        // Persist the monitored email off the main thread
+        let emailToSave = emailInput
+        Task.detached(priority: .utility) {
+            PersistenceManager.shared.saveMonitoredEmail(emailToSave)
+        }
 
         breachService.checkEmail(emailInput)
+    }
+
+    // MARK: - Password Breach Check
+
+    private var passwordCheckSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Image(systemName: "key.fill")
+                    .foregroundColor(.purple)
+                Text("Password Breach Check")
+                    .font(.headline)
+            }
+            Text("Check if a password has appeared in known data breaches (k-anonymity -- your password never leaves your device).")
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            HStack(spacing: 8) {
+                SecureField("Enter a password to check...", text: $passwordInput)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: 320)
+                    .onSubmit { checkPassword() }
+
+                if isCheckingPassword {
+                    ProgressView()
+                        .scaleEffect(0.7)
+                }
+
+                Button(action: checkPassword) {
+                    Label("Check", systemImage: "magnifyingglass")
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.purple)
+                .disabled(passwordInput.isEmpty || isCheckingPassword)
+            }
+
+            if hasCheckedPassword {
+                if let count = passwordCheckResult, count > 0 {
+                    HStack(spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundColor(.red)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("This password has been seen \(formatPwnCount(count)) times in data breaches.")
+                                .font(.subheadline)
+                                .bold()
+                                .foregroundColor(.red)
+                            Text("You should change it immediately wherever it's used.")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .padding(10)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(Color.red.opacity(0.08)))
+                } else if passwordCheckResult == 0 {
+                    HStack(spacing: 8) {
+                        Image(systemName: "checkmark.shield.fill")
+                            .foregroundColor(.green)
+                        Text("This password was not found in any known data breaches.")
+                            .font(.subheadline)
+                            .foregroundColor(.green)
+                    }
+                    .padding(10)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(Color.green.opacity(0.08)))
+                } else {
+                    HStack(spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle")
+                            .foregroundColor(.orange)
+                        Text("Could not check password. Try again later.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+        }
+        .padding()
+        .background(RoundedRectangle(cornerRadius: 12)
+            .fill(Color(NSColor.controlBackgroundColor)))
+    }
+
+    private func checkPassword() {
+        guard !passwordInput.isEmpty else { return }
+        isCheckingPassword = true
+        hasCheckedPassword = false
+        breachService.checkPassword(passwordInput) { count in
+            passwordCheckResult = count
+            isCheckingPassword = false
+            hasCheckedPassword = true
+        }
+    }
+
+    private func formatPwnCount(_ count: Int) -> String {
+        if count >= 1_000_000 { return String(format: "%.1fM", Double(count) / 1_000_000) }
+        if count >= 1_000 { return String(format: "%.1fK", Double(count) / 1_000) }
+        return "\(count)"
+    }
+
+    // MARK: - Breach Monitoring Scheduler
+
+    private var breachMonitoringSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Image(systemName: "clock.arrow.2.circlepath")
+                    .foregroundColor(.blue)
+                Text("Automated Monitoring")
+                    .font(.headline)
+                Spacer()
+                Toggle("", isOn: Binding(
+                    get: { breachService.isMonitoringEnabled },
+                    set: { enabled in
+                        if enabled {
+                            breachService.startMonitoring()
+                        } else {
+                            breachService.stopMonitoring()
+                        }
+                    }
+                ))
+                .toggleStyle(.switch)
+                .labelsHidden()
+            }
+
+            Text("Automatically re-check your monitored emails for new breaches on a schedule.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            if breachService.isMonitoringEnabled {
+                Picker("Check Interval", selection: Binding(
+                    get: { breachService.monitoringInterval },
+                    set: { newInterval in
+                        breachService.monitoringInterval = newInterval
+                        breachService.startMonitoring()
+                    }
+                )) {
+                    ForEach(BreachCheckService.BreachMonitoringInterval.allCases) { interval in
+                        Text(interval.rawValue).tag(interval)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                if let lastRun = breachService.lastMonitoringRun {
+                    HStack(spacing: 4) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundColor(.green)
+                            .font(.caption)
+                        Text("Last checked: \(lastRun, style: .relative) ago")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                if breachService.status.emailsMonitored.isEmpty {
+                    HStack(spacing: 4) {
+                        Image(systemName: "info.circle")
+                            .foregroundColor(.orange)
+                            .font(.caption)
+                        Text("No emails being monitored. Check an email above to start monitoring.")
+                            .font(.caption)
+                            .foregroundColor(.orange)
+                    }
+                }
+            }
+        }
+        .padding()
+        .background(RoundedRectangle(cornerRadius: 12)
+            .fill(Color(NSColor.controlBackgroundColor)))
     }
 }
 
@@ -366,8 +620,92 @@ struct BreachStatCard: View {
         }
         .frame(maxWidth: .infinity)
         .padding()
-        .background(RoundedRectangle(cornerRadius: 10)
+        .background(RoundedRectangle(cornerRadius: 12)
             .fill(Color(NSColor.controlBackgroundColor)))
+    }
+}
+
+struct RemediationStepRow: View {
+    let stepNumber: Int
+    let breach: BreachResult
+    @State private var expanded = false
+
+    let steps: [String]
+
+    private var severityColor: Color {
+        switch breach.severity {
+        case .critical: return .red
+        case .high: return .orange
+        case .medium: return .yellow
+        case .low: return .green
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button(action: { withAnimation { expanded.toggle() } }) {
+                HStack(spacing: 12) {
+                    // Priority number
+                    ZStack {
+                        Circle()
+                            .fill(severityColor)
+                            .frame(width: 28, height: 28)
+                        Text("\(stepNumber)")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundColor(.white)
+                    }
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(breach.serviceName)
+                            .font(.subheadline)
+                            .bold()
+                        HStack(spacing: 4) {
+                            Text(breach.severity.rawValue)
+                                .font(.caption2)
+                                .bold()
+                                .foregroundColor(severityColor)
+                            Text("--")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                            Text("\(breach.dataTypes.prefix(3).joined(separator: ", "))")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                                .lineLimit(1)
+                        }
+                    }
+
+                    Spacer()
+
+                    Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if expanded {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(Array(steps.enumerated()), id: \.offset) { idx, step in
+                        HStack(alignment: .top, spacing: 8) {
+                            Image(systemName: "\(idx + 1).circle.fill")
+                                .foregroundColor(.accentColor)
+                                .font(.caption)
+                                .frame(width: 16)
+                            Text(step)
+                                .font(.caption)
+                        }
+                    }
+                }
+                .padding(.leading, 40)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 8)
+            .fill(severityColor.opacity(0.05)))
+        .overlay(RoundedRectangle(cornerRadius: 8)
+            .stroke(severityColor.opacity(0.15), lineWidth: 1))
     }
 }
 

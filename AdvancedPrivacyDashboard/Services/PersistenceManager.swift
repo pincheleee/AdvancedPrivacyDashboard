@@ -125,6 +125,18 @@ class PersistenceManager {
             );
         """)
 
+        execute("""
+            CREATE TABLE IF NOT EXISTS activity_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                category TEXT NOT NULL,
+                title TEXT NOT NULL,
+                detail TEXT,
+                severity TEXT NOT NULL DEFAULT 'info',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+
+        execute("CREATE INDEX IF NOT EXISTS idx_activity_created ON activity_log(created_at);")
         execute("CREATE INDEX IF NOT EXISTS idx_dns_timestamp ON dns_query_log(timestamp);")
         execute("CREATE INDEX IF NOT EXISTS idx_traffic_timestamp ON network_traffic_history(timestamp);")
         execute("CREATE INDEX IF NOT EXISTS idx_breach_email ON breach_history(email);")
@@ -174,9 +186,36 @@ class PersistenceManager {
 
     // MARK: - Settings
 
+    /// Keys that should be synced via iCloud
+    private static let iCloudSyncKeys: Set<String> = [
+        "selectedTheme", "notificationsEnabled", "autoScanEnabled",
+        "scanInterval", "dataRetentionDays", "showMenuBar",
+        "breachMonitoringEnabled", "breachMonitoringInterval"
+    ]
+
     func saveSetting(key: String, value: String) {
         execute("INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now'));",
                 params: [key, value])
+
+        // Sync to iCloud if applicable
+        if Self.iCloudSyncKeys.contains(key) {
+            NSUbiquitousKeyValueStore.default.set(value, forKey: key)
+            NSUbiquitousKeyValueStore.default.synchronize()
+        }
+    }
+
+    /// Pull any iCloud-stored settings that are newer or missing locally
+    func syncFromiCloud() {
+        NSUbiquitousKeyValueStore.default.synchronize()
+        for key in Self.iCloudSyncKeys {
+            if let cloudValue = NSUbiquitousKeyValueStore.default.string(forKey: key) {
+                let localValue = getSetting(key: key)
+                if localValue == nil || localValue != cloudValue {
+                    execute("INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now'));",
+                            params: [key, cloudValue])
+                }
+            }
+        }
     }
 
     func getSetting(key: String) -> String? {
@@ -294,6 +333,33 @@ class PersistenceManager {
         }
     }
 
+    struct BlocklistSourceInfo {
+        let source: String
+        let domainCount: Int
+        let lastImported: String
+    }
+
+    func getBlocklistSources() -> [BlocklistSourceInfo] {
+        return dbQueue.sync {
+            var results: [BlocklistSourceInfo] = []
+            var stmt: OpaquePointer?
+            defer { sqlite3_finalize(stmt) }
+            let sql = "SELECT source, COUNT(*) as cnt, MAX(added_at) as last_added FROM dns_blocklist GROUP BY source ORDER BY cnt DESC;"
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                let source = String(cString: sqlite3_column_text(stmt, 0))
+                let count = Int(sqlite3_column_int(stmt, 1))
+                let lastAdded = String(cString: sqlite3_column_text(stmt, 2))
+                results.append(BlocklistSourceInfo(source: source, domainCount: count, lastImported: lastAdded))
+            }
+            return results
+        }
+    }
+
+    func removeBlocklistSource(_ source: String) {
+        execute("DELETE FROM dns_blocklist WHERE source = ?;", params: [source])
+    }
+
     // MARK: - DNS Query Log
 
     func logDNSQuery(domain: String, queryType: String, responseIP: String, process: String, isBlocked: Bool, isSuspicious: Bool) {
@@ -383,6 +449,18 @@ class PersistenceManager {
         ])
     }
 
+    func getBreachCount() -> Int {
+        return dbQueue.sync {
+            var stmt: OpaquePointer?
+            defer { sqlite3_finalize(stmt) }
+            guard sqlite3_prepare_v2(db, "SELECT COUNT(DISTINCT service_name) FROM breach_history;", -1, &stmt, nil) == SQLITE_OK else { return 0 }
+            if sqlite3_step(stmt) == SQLITE_ROW {
+                return Int(sqlite3_column_int(stmt, 0))
+            }
+            return 0
+        }
+    }
+
     func saveMonitoredEmail(_ email: String) {
         execute("INSERT OR IGNORE INTO monitored_emails (email) VALUES (?);", params: [email])
     }
@@ -434,6 +512,54 @@ class PersistenceManager {
             }
             return threats
         }
+    }
+
+    // MARK: - Activity Log
+
+    func logActivity(category: String, title: String, detail: String, severity: String = "info") {
+        execute("""
+            INSERT INTO activity_log (category, title, detail, severity)
+            VALUES (?, ?, ?, ?);
+        """, params: [category, title, detail, severity])
+
+        // Keep last 500 entries
+        execute("DELETE FROM activity_log WHERE id NOT IN (SELECT id FROM activity_log ORDER BY id DESC LIMIT 500);")
+    }
+
+    func getRecentActivity(limit: Int = 100, category: String? = nil) -> [(id: Int, category: String, title: String, detail: String, severity: String, date: String)] {
+        return dbQueue.sync {
+            var results: [(Int, String, String, String, String, String)] = []
+            var stmt: OpaquePointer?
+            defer { sqlite3_finalize(stmt) }
+
+            let sql: String
+            if let cat = category {
+                sql = "SELECT id, category, title, detail, severity, created_at FROM activity_log WHERE category = ? ORDER BY created_at DESC LIMIT ?;"
+                guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+                sqlite3_bind_text(stmt, 1, (cat as NSString).utf8String, -1, Self.sqliteTransient)
+                sqlite3_bind_int(stmt, 2, Int32(limit))
+            } else {
+                sql = "SELECT id, category, title, detail, severity, created_at FROM activity_log ORDER BY created_at DESC LIMIT ?;"
+                guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+                sqlite3_bind_int(stmt, 1, Int32(limit))
+            }
+
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                results.append((
+                    Int(sqlite3_column_int(stmt, 0)),
+                    String(cString: sqlite3_column_text(stmt, 1)),
+                    String(cString: sqlite3_column_text(stmt, 2)),
+                    String(cString: sqlite3_column_text(stmt, 3)),
+                    String(cString: sqlite3_column_text(stmt, 4)),
+                    String(cString: sqlite3_column_text(stmt, 5))
+                ))
+            }
+            return results
+        }
+    }
+
+    func clearActivityLog() {
+        execute("DELETE FROM activity_log;")
     }
 
     // MARK: - Data Management

@@ -12,7 +12,26 @@ class ScanService: ObservableObject {
 
     @Published var securityScore: Int = 100
 
+    private var scheduledScanTimer: Timer?
+
     private init() {}
+
+    // MARK: - Scheduled Scans
+
+    func startScheduledScans() {
+        stopScheduledScans()
+        let intervalHours = PersistenceManager.shared.getDoubleSetting(key: "scanInterval", defaultValue: 24.0)
+        let interval = intervalHours * 3600
+
+        scheduledScanTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+            self?.runQuietScan()
+        }
+    }
+
+    func stopScheduledScans() {
+        scheduledScanTimer?.invalidate()
+        scheduledScanTimer = nil
+    }
 
     // MARK: - Public API
 
@@ -28,10 +47,10 @@ class ScanService: ObservableObject {
         }
 
         // Animate progress on a timer, then perform real checks on background thread
-        Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] timer in
+        Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] timer in
             guard let self = self else { timer.invalidate(); return }
             if self.scanProgress < 1.0 {
-                self.scanProgress += 0.008
+                self.scanProgress += 0.08
             } else {
                 timer.invalidate()
                 // C4: Run system checks on background thread
@@ -243,7 +262,7 @@ class ScanService: ObservableObject {
 
     func checkSuspiciousConnections() -> [String] {
         let output = SystemCommandRunner.runSync("/usr/sbin/netstat", arguments: ["-an", "-p", "tcp"])
-        let suspiciousPorts = [4444, 5555, 6666, 8888, 31337, 12345, 1337, 9999]
+        let suspiciousPorts = [4444, 5555, 6666, 31337, 12345, 1337, 9999]
         var results: [String] = []
         for line in output.components(separatedBy: "\n") where line.contains("ESTABLISHED") {
             let parts = line.split(separator: " ", omittingEmptySubsequences: true)

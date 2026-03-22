@@ -41,17 +41,23 @@ class WidgetDataWriter {
     // MARK: - Manual Update
 
     func writeCurrentState() {
-        let vpnActive = VPNDetector.shared.isVPNActive
-        // S1: Use centralized firewall check
-        let firewallEnabled = SystemCommandRunner.isFirewallEnabled()
-        let threatCount = ScanService.shared.lastScanThreats.count
+        // Dispatch to background to avoid blocking main thread with Process calls
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self = self else { return }
+            let vpnActive = VPNDetector.shared.isVPNActive
+            // S1: Use centralized firewall check
+            let firewallEnabled = SystemCommandRunner.isFirewallEnabled()
+            let threatCount = ScanService.shared.lastScanThreats.count
 
-        defaults?.set(threatCount == 0 && firewallEnabled, forKey: Key.isSecure)
-        defaults?.set(threatCount, forKey: Key.threatsCount)
-        defaults?.set(true, forKey: Key.networkConnected)
-        defaults?.set(vpnActive, forKey: Key.vpnActive)
-        defaults?.set(firewallEnabled, forKey: Key.firewallEnabled)
-        defaults?.set(Date().timeIntervalSince1970, forKey: Key.lastUpdated)
+            DispatchQueue.main.async {
+                self.defaults?.set(threatCount == 0 && firewallEnabled, forKey: Key.isSecure)
+                self.defaults?.set(threatCount, forKey: Key.threatsCount)
+                self.defaults?.set(true, forKey: Key.networkConnected)
+                self.defaults?.set(vpnActive, forKey: Key.vpnActive)
+                self.defaults?.set(firewallEnabled, forKey: Key.firewallEnabled)
+                self.defaults?.set(Date().timeIntervalSince1970, forKey: Key.lastUpdated)
+            }
+        }
     }
 
     func update(

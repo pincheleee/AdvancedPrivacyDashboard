@@ -1,42 +1,101 @@
 import SwiftUI
 import ServiceManagement
+import AppKit
 
+// Manual NSApplication entry point for SPM executables (no .app bundle)
 @main
-struct AdvancedPrivacyDashboardApp: App {
-    @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
-
-    var body: some Scene {
-        WindowGroup {
-            ContentView()
-        }
-        .windowStyle(HiddenTitleBarWindowStyle())
-        .commands {
-            SidebarCommands()
-        }
+enum AppMain {
+    static func main() {
+        let app = NSApplication.shared
+        app.setActivationPolicy(.regular)
+        
+        // Create and assign the menu bar (required before app.run() for proper activation)
+        let mainMenu = NSMenu()
+        let appMenuItem = NSMenuItem()
+        mainMenu.addItem(appMenuItem)
+        let appMenu = NSMenu()
+        appMenu.addItem(withTitle: "Quit Advanced Privacy Dashboard",
+                        action: #selector(NSApplication.terminate(_:)),
+                        keyEquivalent: "q")
+        appMenuItem.submenu = appMenu
+        app.mainMenu = mainMenu
+        
+        let delegate = AppDelegate()
+        app.delegate = delegate
+        
+        app.run()
     }
 }
 
 class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var popover: NSPopover?
+    private var mainWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Register as login item (may fail without proper signing)
-        try? SMAppService.mainApp.register()
+        // Create the window FIRST so the user sees UI immediately
+        createMainWindow()
 
-        // Initialize core services
+        // Then initialize services in the background
+        let isAppBundle = Bundle.main.bundleURL.pathExtension == "app"
+
+        if isAppBundle {
+            if SMAppService.mainApp.status == .enabled {
+                try? SMAppService.mainApp.register()
+            }
+        }
+
         NotificationManager.shared.requestPermission()
         VPNDetector.shared.startMonitoring()
         UpdateChecker.shared.schedulePeriodicCheck()
-        WidgetDataWriter.shared.startPeriodicUpdates()
 
-        // Trigger PersistenceManager initialization
+        if isAppBundle {
+            WidgetDataWriter.shared.startPeriodicUpdates()
+        }
+
         _ = PersistenceManager.shared
+        if isAppBundle {
+            PersistenceManager.shared.syncFromiCloud()
+        }
 
-        // W6: Start the shared network service once at launch
         NetworkService.shared.startMonitoring()
 
+        if PersistenceManager.shared.getBoolSetting(key: "autoScanEnabled", defaultValue: true) {
+            ScanService.shared.startScheduledScans()
+        }
+
         setupMenuBar()
+    }
+
+    private func createMainWindow() {
+        let contentView = ContentView()
+        let hostingController = NSHostingController(rootView: contentView)
+        hostingController.view.frame = NSRect(x: 0, y: 0, width: 1200, height: 800)
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.center()
+        window.title = "Advanced Privacy Dashboard"
+        window.contentViewController = hostingController
+        window.minSize = NSSize(width: 900, height: 600)
+        window.setFrameAutosaveName("MainWindow")
+        window.isReleasedWhenClosed = false
+        window.makeKeyAndOrderFront(nil)
+
+        self.mainWindow = window
+
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag {
+            mainWindow?.makeKeyAndOrderFront(nil)
+        }
+        return true
     }
 
     private func setupMenuBar() {
@@ -68,129 +127,148 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 struct MenuBarView: View {
     @ObservedObject private var networkService = NetworkService.shared
     @ObservedObject private var vpnDetector = VPNDetector.shared
+    @ObservedObject private var scanService = ScanService.shared
+    @ObservedObject private var firewallService = FirewallService.shared
 
     var body: some View {
-        VStack(spacing: 12) {
-            // Header
-            HStack {
-                Image(systemName: "shield.lefthalf.filled")
-                    .foregroundColor(.blue)
-                    .font(.title2)
-                Text("Privacy Dashboard")
-                    .font(.headline)
-                Spacer()
-            }
-
-            Divider()
-
-            // VPN Status Indicator
-            HStack {
-                Label("VPN", systemImage: vpnDetector.isVPNActive ? "lock.shield.fill" : "lock.shield")
-                    .font(.subheadline)
-                Spacer()
-                HStack(spacing: 6) {
+        VStack(spacing: 10) {
+            // Header with score ring
+            HStack(spacing: 12) {
+                // Mini privacy score ring
+                ZStack {
                     Circle()
-                        .fill(vpnDetector.isVPNActive ? Color.green : Color.orange)
-                        .frame(width: 8, height: 8)
-                    Text(vpnDetector.isVPNActive ? "Connected" : "Not Connected")
-                        .font(.caption)
-                        .foregroundColor(vpnDetector.isVPNActive ? .green : .orange)
+                        .stroke(Color.gray.opacity(0.2), lineWidth: 4)
+                        .frame(width: 40, height: 40)
+                    Circle()
+                        .trim(from: 0, to: CGFloat(scanService.securityScore) / 100.0)
+                        .stroke(scanService.scoreColor, style: StrokeStyle(lineWidth: 4, lineCap: .round))
+                        .frame(width: 40, height: 40)
+                        .rotationEffect(.degrees(-90))
+                    Text("\(scanService.securityScore)")
+                        .font(.system(size: 12, weight: .bold, design: .rounded))
                 }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Privacy Dashboard")
+                        .font(.headline)
+                    Text(scanService.scoreLabel)
+                        .font(.caption)
+                        .foregroundColor(scanService.scoreColor)
+                }
+                Spacer()
             }
 
             Divider()
 
-            // Network Status
-            HStack {
-                VStack(alignment: .leading, spacing: 4) {
-                    Label("Network", systemImage: "network")
-                        .font(.subheadline)
-                    Text(networkService.networkStatus.description)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-                Spacer()
-                Circle()
-                    .fill(networkService.networkStatus == .connected ? Color.green : Color.red)
-                    .frame(width: 8, height: 8)
+            // Quick status indicators
+            HStack(spacing: 16) {
+                MiniStatusItem(
+                    icon: vpnDetector.isVPNActive ? "lock.shield.fill" : "shield.slash",
+                    label: "VPN",
+                    isGood: vpnDetector.isVPNActive
+                )
+                MiniStatusItem(
+                    icon: "flame",
+                    label: "Firewall",
+                    isGood: firewallService.status.isEnabled
+                )
+                MiniStatusItem(
+                    icon: "network",
+                    label: "Network",
+                    isGood: networkService.networkStatus == .connected
+                )
             }
 
-            // Network Stats
+            Divider()
+
+            // Network Stats compact
             HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Download")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                HStack(spacing: 4) {
+                    Image(systemName: "arrow.down").font(.caption2).foregroundColor(.blue)
                     Text(networkService.networkStats.formattedDownloadSpeed)
                         .font(.system(.caption, design: .monospaced))
                 }
                 Spacer()
-                VStack(alignment: .trailing, spacing: 2) {
-                    Text("Upload")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                HStack(spacing: 4) {
+                    Image(systemName: "arrow.up").font(.caption2).foregroundColor(.green)
                     Text(networkService.networkStats.formattedUploadSpeed)
+                        .font(.system(.caption, design: .monospaced))
+                }
+                Spacer()
+                HStack(spacing: 4) {
+                    Image(systemName: "link").font(.caption2).foregroundColor(.orange)
+                    Text("\(networkService.networkStats.activeConnectionsCount)")
                         .font(.system(.caption, design: .monospaced))
                 }
             }
 
-            HStack {
-                Text("Connections")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                Spacer()
-                Text("\(networkService.networkStats.activeConnectionsCount)")
-                    .font(.system(.caption, design: .monospaced))
-            }
-
             Divider()
 
-            // Quick Security Status
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Security Status")
-                    .font(.subheadline)
-                    .fontWeight(.medium)
-
-                HStack(spacing: 8) {
-                    Image(systemName: vpnDetector.isVPNActive ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                        .foregroundColor(vpnDetector.isVPNActive ? .green : .yellow)
-                        .font(.caption)
-                    Text(vpnDetector.isVPNActive ? "Traffic encrypted via VPN" : "No VPN detected")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+            // Quick Scan button
+            Button(action: {
+                scanService.runQuietScan()
+            }) {
+                HStack {
+                    if scanService.isScanning {
+                        ProgressView()
+                            .controlSize(.small)
+                            .frame(width: 14, height: 14)
+                        Text("Scanning...")
+                    } else {
+                        Image(systemName: "shield.checkerboard")
+                        Text("Quick Scan")
+                    }
                 }
-
-                HStack(spacing: 8) {
-                    Image(systemName: networkService.networkStatus == .connected ? "checkmark.circle.fill" : "xmark.circle.fill")
-                        .foregroundColor(networkService.networkStatus == .connected ? .green : .red)
-                        .font(.caption)
-                    Text(networkService.networkStatus == .connected ? "Network active" : "Network offline")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            Divider()
-
-            Button("Open Dashboard") {
-                NSApp.activate(ignoringOtherApps: true)
-                if let window = NSApp.windows.first(where: { $0.title.contains("Privacy") || $0.isKeyWindow }) {
-                    window.makeKeyAndOrderFront(nil)
-                } else {
-                    NSApp.windows.first?.makeKeyAndOrderFront(nil)
-                }
+                .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
-            .frame(maxWidth: .infinity)
+            .disabled(scanService.isScanning)
 
-            Button("Quit") {
-                NSApp.terminate(nil)
+            // Last scan info
+            if let lastScan = scanService.lastScanDate {
+                Text("Last scan: \(lastScan, style: .relative) ago")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
             }
-            .buttonStyle(.bordered)
-            .frame(maxWidth: .infinity)
+
+            Divider()
+
+            HStack(spacing: 8) {
+                Button("Open Dashboard") {
+                    NSApp.activate(ignoringOtherApps: true)
+                    if let window = NSApp.windows.first(where: { $0.title.contains("Privacy") || $0.isKeyWindow }) {
+                        window.makeKeyAndOrderFront(nil)
+                    } else {
+                        NSApp.windows.first?.makeKeyAndOrderFront(nil)
+                    }
+                }
+                .buttonStyle(.bordered)
+                .frame(maxWidth: .infinity)
+
+                Button("Quit") {
+                    NSApp.terminate(nil)
+                }
+                .buttonStyle(.bordered)
+            }
         }
         .padding()
-        // W6: Network monitoring is started once at app launch via AppDelegate
+    }
+}
+
+struct MiniStatusItem: View {
+    let icon: String
+    let label: String
+    let isGood: Bool
+
+    var body: some View {
+        VStack(spacing: 4) {
+            Image(systemName: icon)
+                .foregroundColor(isGood ? .green : .orange)
+                .font(.caption)
+            Text(label)
+                .font(.system(size: 9))
+                .foregroundColor(.secondary)
+        }
+        .frame(maxWidth: .infinity)
     }
 }

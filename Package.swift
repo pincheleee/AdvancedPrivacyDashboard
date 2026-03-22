@@ -18,7 +18,9 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "AdvancedPrivacyDashboard",
-            dependencies: []
+            dependencies: [],
+            path: "AdvancedPrivacyDashboard",
+            exclude: ["Resources", "AdvancedPrivacyDashboard.entitlements", "Info.plist"]
         ),
     ]
 ) 

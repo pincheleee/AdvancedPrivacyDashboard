@@ -6,6 +6,8 @@ struct PrivacyManagementView: View {
     @State private var installedApps: [PrivacyApp] = []
     @State private var tccPermissions: [String: [String]] = [:]
     @State private var isLoading = true
+    /// Track which apps have already triggered alerts to prevent notification spam on every tab visit.
+    @State private var notifiedApps: Set<String> = []
 
     /// Well-known system apps that are expected to have camera/microphone/location access.
     /// Apps outside this set with sensitive permissions trigger a privacy alert.
@@ -122,9 +124,19 @@ struct PrivacyManagementView: View {
                 ProgressView("Loading applications...")
                     .padding()
             } else if filteredApps.isEmpty {
-                Text("No applications found")
-                    .foregroundColor(.secondary)
-                    .padding()
+                VStack(spacing: 8) {
+                    Image(systemName: "app.dashed")
+                        .font(.largeTitle)
+                        .foregroundColor(.secondary)
+                    Text("No applications found")
+                        .font(.headline)
+                        .foregroundColor(.secondary)
+                    Text("Installed applications and their privacy permissions will appear here.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 30)
             } else {
                 ForEach(filteredApps) { app in
                     AppPrivacyRow(app: app, permissions: tccPermissions[app.bundleId] ?? [])
@@ -186,11 +198,9 @@ struct PrivacyManagementView: View {
             Text("Cookie Management")
                 .font(.headline)
 
-            Toggle("Block Third-party Cookies", isOn: .constant(true))
-            Toggle("Clear Cookies on Exit", isOn: .constant(false))
-            Toggle("Accept Essential Cookies Only", isOn: .constant(true))
-
-            Divider()
+            Text("Cookie settings are managed per-browser. Use the button below to review your Safari privacy settings.")
+                .font(.subheadline)
+                .foregroundColor(.secondary)
 
             Button("Open Safari Privacy Settings") {
                 NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy")!)
@@ -207,12 +217,9 @@ struct PrivacyManagementView: View {
             Text("Analytics & Tracking")
                 .font(.headline)
 
-            Toggle("Block Analytics Tracking", isOn: .constant(true))
-            Toggle("Block Ad Tracking", isOn: .constant(true))
-            Toggle("Send Do Not Track Requests", isOn: .constant(true))
-            Toggle("Limit Ad Tracking", isOn: .constant(true))
-
-            Divider()
+            Text("macOS provides system-level analytics controls. Use the button below to manage sharing and tracking preferences.")
+                .font(.subheadline)
+                .foregroundColor(.secondary)
 
             Button("Open Privacy Settings") {
                 openPrivacySettings()
@@ -251,6 +258,9 @@ struct PrivacyManagementView: View {
             if expectedSensitiveApps.contains(app.bundleId) { continue }
 
             for perm in appPerms where sensitiveServices.contains(perm) {
+                let key = "\(app.bundleId):\(perm)"
+                guard !notifiedApps.contains(key) else { continue }
+                notifiedApps.insert(key)
                 NotificationManager.shared.sendPrivacyAlert(
                     appName: app.name,
                     permission: perm
@@ -269,8 +279,9 @@ struct PrivacyManagementView: View {
 
         do {
             try task.run()
-            task.waitUntilExit()
+            // C1: Read pipe before waitUntilExit to prevent deadlock
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            task.waitUntilExit()
             guard let output = String(data: data, encoding: .utf8) else { return [] }
 
             var apps: [PrivacyApp] = []
@@ -307,8 +318,9 @@ struct PrivacyManagementView: View {
 
         do {
             try task.run()
-            task.waitUntilExit()
+            // C1: Read pipe before waitUntilExit to prevent deadlock
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            task.waitUntilExit()
             guard let output = String(data: data, encoding: .utf8) else { return [:] }
 
             var permissions: [String: [String]] = [:]

@@ -1,4 +1,5 @@
 import SwiftUI
+import Charts
 
 struct ThreatDetectionView: View {
     @State private var scanProgress: Double = 0.0
@@ -8,6 +9,8 @@ struct ThreatDetectionView: View {
     @State private var lastScanDate: Date?
     @State private var historicalThreats: [(name: String, description: String, severity: String, date: String)] = []
     @State private var currentCheckName: String = ""
+    @State private var timelineEvents: [TimelineEvent] = []
+    @State private var timelineFilter: TimelineEventType? = nil
 
     var body: some View {
         ScrollView {
@@ -25,12 +28,16 @@ struct ThreatDetectionView: View {
 
                 threatsList
 
+                // Threat Correlation Timeline
+                threatTimelineSection
+
                 threatHistorySection
             }
             .padding()
         }
-        .onAppear {
-            loadThreatHistory()
+        .task {
+            await loadThreatHistoryAsync()
+            await loadTimelineEventsAsync()
         }
     }
 
@@ -51,26 +58,30 @@ struct ThreatDetectionView: View {
     }
 
     private var threatStatusSection: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        let criticalThreats = threats.filter { $0.severity == .critical }
+        let suspiciousThreats = threats.filter { $0.severity == .medium || $0.severity == .high }
+        let lowThreats = threats.filter { $0.severity == .low }
+
+        return VStack(alignment: .leading, spacing: 16) {
             Text("Threat Status")
                 .font(.headline)
 
             VStack(spacing: 12) {
                 ThreatStatRow(
                     title: "Malware Detected",
-                    count: "\(threats.filter { $0.severity == .critical }.count)",
+                    count: "\(criticalThreats.count)",
                     icon: "xmark.shield",
-                    color: threats.filter({ $0.severity == .critical }).isEmpty ? .green : .red
+                    color: criticalThreats.isEmpty ? .green : .red
                 )
                 ThreatStatRow(
                     title: "Suspicious Activities",
-                    count: "\(threats.filter { $0.severity == .medium || $0.severity == .high }.count)",
+                    count: "\(suspiciousThreats.count)",
                     icon: "exclamationmark.triangle",
                     color: .yellow
                 )
                 ThreatStatRow(
                     title: "System Vulnerabilities",
-                    count: "\(threats.filter { $0.severity == .low }.count)",
+                    count: "\(lowThreats.count)",
                     icon: "lock.shield",
                     color: .orange
                 )
@@ -265,12 +276,17 @@ struct ThreatDetectionView: View {
             }
 
             // W3: Log to persistence only here; notification no longer double-logs
+            let detectedCopy = detected
+            Task.detached(priority: .utility) {
+                for threat in detectedCopy {
+                    PersistenceManager.shared.logThreat(
+                        name: threat.name,
+                        description: threat.description,
+                        severity: threat.severity.rawValue
+                    )
+                }
+            }
             for threat in detected {
-                PersistenceManager.shared.logThreat(
-                    name: threat.name,
-                    description: threat.description,
-                    severity: threat.severity.rawValue
-                )
                 NotificationManager.shared.sendThreatAlert(
                     title: threat.name,
                     body: threat.description,
@@ -278,11 +294,11 @@ struct ThreatDetectionView: View {
                 )
             }
             // Refresh history after logging
-            loadThreatHistory()
+            Task { await loadThreatHistoryAsync() }
         }
 
         // Bind progress from the shared service
-        Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { timer in
+        Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { timer in
             scanProgress = ScanService.shared.scanProgress
             if !ScanService.shared.isScanning {
                 timer.invalidate()
@@ -290,8 +306,186 @@ struct ThreatDetectionView: View {
         }
     }
 
-    private func loadThreatHistory() {
-        historicalThreats = PersistenceManager.shared.getRecentThreats()
+    private func loadThreatHistoryAsync() async {
+        let threats = await Task.detached(priority: .utility) {
+            PersistenceManager.shared.getRecentThreats()
+        }.value
+        historicalThreats = threats
+    }
+
+    // MARK: - Threat Correlation Timeline
+
+    private var threatTimelineSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Text("Threat Correlation Timeline")
+                    .font(.headline)
+                Spacer()
+
+                // Filter pills
+                HStack(spacing: 6) {
+                    TimelineFilterPill(label: "All", isSelected: timelineFilter == nil) {
+                        timelineFilter = nil
+                    }
+                    ForEach(TimelineEventType.allCases, id: \.self) { type in
+                        TimelineFilterPill(label: type.rawValue, isSelected: timelineFilter == type) {
+                            timelineFilter = type
+                        }
+                    }
+                }
+
+                Button {
+                    Task { await loadTimelineEventsAsync() }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(.borderless)
+            }
+
+            // Heatmap sparkline
+            let filteredEvents = timelineFilter == nil
+                ? timelineEvents
+                : timelineEvents.filter { $0.type == timelineFilter }
+
+            if !filteredEvents.isEmpty {
+                let hourBuckets = bucketEventsPerHour(filteredEvents)
+                Chart(hourBuckets, id: \.hour) { bucket in
+                    BarMark(
+                        x: .value("Hour", bucket.hour),
+                        y: .value("Events", bucket.count)
+                    )
+                    .foregroundStyle(bucket.maxSeverity >= 3 ? Color.red.gradient : bucket.maxSeverity >= 2 ? Color.orange.gradient : Color.blue.gradient)
+                }
+                .chartXAxisLabel("Hours Ago")
+                .frame(height: 80)
+
+                // Timeline list
+                ForEach(filteredEvents.prefix(15)) { event in
+                    HStack(spacing: 12) {
+                        // Severity dot
+                        Circle()
+                            .fill(timelineSeverityColor(event.severity))
+                            .frame(width: 8, height: 8)
+
+                        // Vertical timeline line
+                        Rectangle()
+                            .fill(Color.gray.opacity(0.3))
+                            .frame(width: 1, height: 30)
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack {
+                                Image(systemName: event.type.icon)
+                                    .font(.caption)
+                                    .foregroundColor(event.type.color)
+                                Text(event.title)
+                                    .font(.caption)
+                                    .bold()
+                                Spacer()
+                                Text(event.timestamp, style: .relative)
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+                            Text(event.detail)
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                                .lineLimit(1)
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+            } else {
+                VStack(spacing: 8) {
+                    Image(systemName: "timeline.selection")
+                        .font(.largeTitle)
+                        .foregroundColor(.secondary)
+                    Text("No events to correlate yet. Run a scan or monitor the network.")
+                        .foregroundColor(.secondary)
+                        .font(.caption)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 20)
+            }
+        }
+        .padding()
+        .background(RoundedRectangle(cornerRadius: 12)
+            .fill(Color(NSColor.controlBackgroundColor)))
+    }
+
+    private func loadTimelineEventsAsync() async {
+        let result = await Task.detached(priority: .utility) {
+            var events: [TimelineEvent] = []
+
+            let threats = PersistenceManager.shared.getRecentThreats(limit: 30)
+            let formatter = ISO8601DateFormatter()
+            for threat in threats {
+                let date = formatter.date(from: threat.date) ?? Date()
+                events.append(TimelineEvent(
+                    type: .threat,
+                    title: threat.name,
+                    detail: threat.description,
+                    severity: Self.severityLevel(threat.severity),
+                    timestamp: date
+                ))
+            }
+
+            let activities = PersistenceManager.shared.getRecentActivity(limit: 30)
+            for activity in activities {
+                let type: TimelineEventType
+                switch activity.category {
+                case "dns": type = .dns
+                case "firewall": type = .firewall
+                case "network": type = .network
+                default: type = .threat
+                }
+                let date = formatter.date(from: activity.date) ?? Date()
+                events.append(TimelineEvent(
+                    type: type,
+                    title: activity.title,
+                    detail: activity.detail,
+                    severity: Self.severityLevel(activity.severity),
+                    timestamp: date
+                ))
+            }
+
+            events.sort { $0.timestamp > $1.timestamp }
+            return events
+        }.value
+        timelineEvents = result
+    }
+
+    private nonisolated static func severityLevel(_ str: String) -> Int {
+        switch str.lowercased() {
+        case "critical": return 4
+        case "high": return 3
+        case "medium", "warning": return 2
+        case "low", "info": return 1
+        default: return 0
+        }
+    }
+
+    private func bucketEventsPerHour(_ events: [TimelineEvent]) -> [(hour: Int, count: Int, maxSeverity: Int)] {
+        var buckets: [Int: (count: Int, maxSev: Int)] = [:]
+        let now = Date()
+        for event in events {
+            let hoursAgo = Int(now.timeIntervalSince(event.timestamp) / 3600)
+            guard hoursAgo >= 0, hoursAgo < 24 else { continue }
+            let existing = buckets[hoursAgo, default: (0, 0)]
+            buckets[hoursAgo] = (existing.count + 1, max(existing.maxSev, event.severity))
+        }
+        return (0..<24).map { hour in
+            let data = buckets[hour, default: (0, 0)]
+            return (hour: hour, count: data.count, maxSeverity: data.maxSev)
+        }
+    }
+
+    private func timelineSeverityColor(_ severity: Int) -> Color {
+        switch severity {
+        case 4: return .red
+        case 3: return .orange
+        case 2: return .yellow
+        case 1: return .blue
+        default: return .gray
+        }
     }
 
     // MARK: - Helpers
@@ -399,4 +593,58 @@ enum ThreatSeverity: String {
     case medium = "Medium"
     case high = "High"
     case critical = "Critical"
+}
+
+// MARK: - Timeline Types
+
+struct TimelineEvent: Identifiable {
+    let id = UUID()
+    let type: TimelineEventType
+    let title: String
+    let detail: String
+    let severity: Int // 0-4
+    let timestamp: Date
+}
+
+enum TimelineEventType: String, CaseIterable {
+    case threat = "Threat"
+    case network = "Network"
+    case dns = "DNS"
+    case firewall = "Firewall"
+
+    var icon: String {
+        switch self {
+        case .threat: return "exclamationmark.shield"
+        case .network: return "network"
+        case .dns: return "globe"
+        case .firewall: return "flame"
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .threat: return .red
+        case .network: return .blue
+        case .dns: return .purple
+        case .firewall: return .orange
+        }
+    }
+}
+
+struct TimelineFilterPill: View {
+    let label: String
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(label)
+                .font(.system(size: 10, weight: isSelected ? .bold : .regular))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(Capsule().fill(isSelected ? Color.accentColor.opacity(0.2) : Color.clear))
+                .overlay(Capsule().stroke(Color.gray.opacity(0.3), lineWidth: 0.5))
+        }
+        .buttonStyle(.plain)
+    }
 }

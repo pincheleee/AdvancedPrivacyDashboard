@@ -16,6 +16,7 @@ struct SettingsView: View {
     @State private var breachAlertsEnabled = true
     @State private var privacyAlertsEnabled = true
     @State private var networkAlertsEnabled = true
+    @State private var dnsAlertsEnabled = true
 
     // Update checker
     @ObservedObject private var updateChecker = UpdateChecker.shared
@@ -23,6 +24,9 @@ struct SettingsView: View {
 
     // Clear data confirmation
     @State private var showClearDataConfirmation = false
+
+    // Scheduled export
+    @ObservedObject private var exportService = ExportService.shared
 
     var body: some View {
         VStack(spacing: 0) {
@@ -72,13 +76,16 @@ struct SettingsView: View {
                 }
             }
         }
-        .onAppear {
-            loadAllSettings()
+        .task {
+            await loadAllSettingsAsync()
+            applyTheme(selectedTheme)
         }
         .alert("Clear All Data", isPresented: $showClearDataConfirmation) {
             Button("Cancel", role: .cancel) {}
             Button("Clear All Data", role: .destructive) {
-                PersistenceManager.shared.clearAllData()
+                Task.detached(priority: .utility) {
+                    PersistenceManager.shared.clearAllData()
+                }
             }
         } message: {
             Text("This will permanently delete all stored data including threat logs, breach history, DNS queries, and network traffic history. This action cannot be undone.")
@@ -87,16 +94,37 @@ struct SettingsView: View {
 
     // MARK: - Load / Save Settings
 
-    private func loadAllSettings() {
-        let pm = PersistenceManager.shared
+    private func applyTheme(_ theme: Theme) {
+        switch theme {
+        case .system:
+            NSApp.appearance = nil
+        case .light:
+            NSApp.appearance = NSAppearance(named: .aqua)
+        case .dark:
+            NSApp.appearance = NSAppearance(named: .darkAqua)
+        }
+    }
 
-        notificationsEnabled = pm.getBoolSetting(key: "notificationsEnabled", defaultValue: true)
-        autoScanEnabled = pm.getBoolSetting(key: "autoScanEnabled", defaultValue: true)
-        scanInterval = pm.getDoubleSetting(key: "scanInterval", defaultValue: 24.0)
-        dataRetentionDays = pm.getDoubleSetting(key: "dataRetentionDays", defaultValue: 30.0)
-        showMenuBar = pm.getBoolSetting(key: "showMenuBar", defaultValue: true)
+    private func loadAllSettingsAsync() async {
+        let settings = await Task.detached(priority: .userInitiated) {
+            let pm = PersistenceManager.shared
+            return (
+                notifications: pm.getBoolSetting(key: "notificationsEnabled", defaultValue: true),
+                autoScan: pm.getBoolSetting(key: "autoScanEnabled", defaultValue: true),
+                scanInt: pm.getDoubleSetting(key: "scanInterval", defaultValue: 24.0),
+                retention: pm.getDoubleSetting(key: "dataRetentionDays", defaultValue: 30.0),
+                menuBar: pm.getBoolSetting(key: "showMenuBar", defaultValue: true),
+                theme: pm.getSetting(key: "selectedTheme")
+            )
+        }.value
 
-        if let themeStr = pm.getSetting(key: "selectedTheme"),
+        notificationsEnabled = settings.notifications
+        autoScanEnabled = settings.autoScan
+        scanInterval = settings.scanInt
+        dataRetentionDays = settings.retention
+        showMenuBar = settings.menuBar
+
+        if let themeStr = settings.theme,
            let theme = Theme(rawValue: themeStr) {
             selectedTheme = theme
         }
@@ -112,6 +140,7 @@ struct SettingsView: View {
         breachAlertsEnabled = nm.isEnabledForCategory(.breach)
         privacyAlertsEnabled = nm.isEnabledForCategory(.privacy)
         networkAlertsEnabled = nm.isEnabledForCategory(.network)
+        dnsAlertsEnabled = nm.isEnabledForCategory(.dns)
     }
 
     // MARK: - General Settings
@@ -126,7 +155,11 @@ struct SettingsView: View {
                 }
                 .pickerStyle(.segmented)
                 .onChange(of: selectedTheme) { newValue in
-                    PersistenceManager.shared.saveSetting(key: "selectedTheme", value: newValue.rawValue)
+                    applyTheme(newValue)
+                    let raw = newValue.rawValue
+                    Task.detached(priority: .utility) {
+                        PersistenceManager.shared.saveSetting(key: "selectedTheme", value: raw)
+                    }
                 }
             }
 
@@ -150,7 +183,10 @@ struct SettingsView: View {
 
                 Toggle("Show in Menu Bar", isOn: $showMenuBar)
                     .onChange(of: showMenuBar) { newValue in
-                        PersistenceManager.shared.saveSetting(key: "showMenuBar", value: newValue ? "true" : "false")
+                        let enabled = newValue
+                        Task.detached(priority: .utility) {
+                            PersistenceManager.shared.saveSetting(key: "showMenuBar", value: enabled ? "true" : "false")
+                        }
                     }
             }
 
@@ -189,7 +225,10 @@ struct SettingsView: View {
             SettingsGroup(title: "Notifications") {
                 Toggle("Enable Notifications", isOn: $notificationsEnabled)
                     .onChange(of: notificationsEnabled) { newValue in
-                        PersistenceManager.shared.saveSetting(key: "notificationsEnabled", value: newValue ? "true" : "false")
+                        let enabled = newValue
+                        Task.detached(priority: .utility) {
+                            PersistenceManager.shared.saveSetting(key: "notificationsEnabled", value: enabled ? "true" : "false")
+                        }
                     }
 
                 if notificationsEnabled {
@@ -212,6 +251,11 @@ struct SettingsView: View {
                         .onChange(of: networkAlertsEnabled) { newValue in
                             NotificationManager.shared.setEnabled(newValue, for: .network)
                         }
+
+                    Toggle("DNS Alerts", isOn: $dnsAlertsEnabled)
+                        .onChange(of: dnsAlertsEnabled) { newValue in
+                            NotificationManager.shared.setEnabled(newValue, for: .dns)
+                        }
                 }
             }
         }
@@ -224,7 +268,10 @@ struct SettingsView: View {
             SettingsGroup(title: "Automatic Scanning") {
                 Toggle("Enable Auto-Scan", isOn: $autoScanEnabled)
                     .onChange(of: autoScanEnabled) { newValue in
-                        PersistenceManager.shared.saveSetting(key: "autoScanEnabled", value: newValue ? "true" : "false")
+                        let enabled = newValue
+                        Task.detached(priority: .utility) {
+                            PersistenceManager.shared.saveSetting(key: "autoScanEnabled", value: enabled ? "true" : "false")
+                        }
                     }
 
                 if autoScanEnabled {
@@ -234,7 +281,10 @@ struct SettingsView: View {
                         HStack {
                             Slider(value: $scanInterval, in: 1...72, step: 1)
                                 .onChange(of: scanInterval) { newValue in
-                                    PersistenceManager.shared.saveSetting(key: "scanInterval", value: String(newValue))
+                                    let interval = newValue
+                                    Task.detached(priority: .utility) {
+                                        PersistenceManager.shared.saveSetting(key: "scanInterval", value: String(interval))
+                                    }
                                 }
                             Text("\(Int(scanInterval))h")
                                 .font(.system(.body, design: .monospaced))
@@ -245,10 +295,20 @@ struct SettingsView: View {
             }
 
             SettingsGroup(title: "Scan Options") {
-                Toggle("Deep System Scan", isOn: .constant(true))
-                Toggle("Network Analysis", isOn: .constant(true))
-                Toggle("DNS Monitoring", isOn: .constant(true))
-                Toggle("Background Apps", isOn: .constant(true))
+                LabeledContent("Deep System Scan") { Text("Enabled").foregroundColor(.secondary) }
+                LabeledContent("Network Analysis") { Text("Enabled").foregroundColor(.secondary) }
+                LabeledContent("DNS Monitoring") { Text("Enabled").foregroundColor(.secondary) }
+                LabeledContent("Background Apps") { Text("Enabled").foregroundColor(.secondary) }
+            }
+
+            SettingsGroup(title: "Threat Response") {
+                Toggle("Auto-block on Critical Threat", isOn: Binding(
+                    get: { FirewallService.shared.autoBlockEnabled },
+                    set: { FirewallService.shared.setAutoBlock($0) }
+                ))
+                Text("Automatically create a firewall deny rule when a critical threat is detected (suspicious IP, malware connection, etc.)")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
             }
         }
     }
@@ -264,7 +324,10 @@ struct SettingsView: View {
                     HStack {
                         Slider(value: $dataRetentionDays, in: 7...90, step: 1)
                             .onChange(of: dataRetentionDays) { newValue in
-                                PersistenceManager.shared.saveSetting(key: "dataRetentionDays", value: String(newValue))
+                                let days = newValue
+                                Task.detached(priority: .utility) {
+                                    PersistenceManager.shared.saveSetting(key: "dataRetentionDays", value: String(days))
+                                }
                             }
                         Text("\(Int(dataRetentionDays)) days")
                             .font(.system(.body, design: .monospaced))
@@ -272,10 +335,61 @@ struct SettingsView: View {
                     }
 
                     Button("Prune Now") {
-                        PersistenceManager.shared.pruneOldData(retentionDays: Int(dataRetentionDays))
+                        let days = Int(dataRetentionDays)
+                        Task.detached(priority: .utility) {
+                            PersistenceManager.shared.pruneOldData(retentionDays: days)
+                        }
                     }
                     .buttonStyle(.bordered)
                     .help("Delete data older than \(Int(dataRetentionDays)) days")
+                }
+            }
+
+            SettingsGroup(title: "Scheduled Reports") {
+                Picker("Auto-Export Interval", selection: Binding(
+                    get: { exportService.scheduleInterval },
+                    set: { exportService.updateSchedule($0) }
+                )) {
+                    ForEach(ExportService.ScheduleInterval.allCases) { interval in
+                        Text(interval.rawValue).tag(interval)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                if exportService.scheduleInterval != .off {
+                    HStack {
+                        Text("Export to:")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Text(exportService.autoExportPath)
+                            .font(.system(.caption, design: .monospaced))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer()
+                        Button("Change") {
+                            let panel = NSOpenPanel()
+                            panel.canChooseDirectories = true
+                            panel.canChooseFiles = false
+                            panel.begin { result in
+                                if result == .OK, let url = panel.url {
+                                    exportService.updateExportPath(url.path)
+                                }
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
+
+                    if let lastExport = exportService.lastScheduledExport {
+                        HStack(spacing: 4) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundColor(.green)
+                                .font(.caption)
+                            Text("Last export: \(lastExport, style: .relative) ago")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
                 }
             }
 
@@ -288,6 +402,11 @@ struct SettingsView: View {
 
                     Button("Export Report") {
                         ExportService.exportSecurityReport()
+                    }
+                    .buttonStyle(.bordered)
+
+                    Button("Export PDF") {
+                        ExportService.exportPDFReport()
                     }
                     .buttonStyle(.bordered)
 
@@ -356,16 +475,7 @@ struct SettingsView: View {
             }
 
             SettingsGroup(title: "Software Updates") {
-                Toggle("Check for Updates Automatically", isOn: .constant(true))
-                Toggle("Download Updates Automatically", isOn: .constant(true))
-            }
-
-            SettingsGroup(title: "Update Channel") {
-                Picker("Channel", selection: .constant(0)) {
-                    Text("Stable").tag(0)
-                    Text("Beta").tag(1)
-                }
-                .pickerStyle(.segmented)
+                LabeledContent("Auto-Check") { Text("Enabled (daily)").foregroundColor(.secondary) }
             }
 
             Button(action: {

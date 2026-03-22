@@ -10,11 +10,48 @@ class BreachCheckService: ObservableObject {
 
     private var lastRequestTime: Date = .distantPast
     private let rateLimitInterval: TimeInterval = 1.6
+    private var monitoringTimer: Timer?
+    @Published var monitoringInterval: BreachMonitoringInterval = .weekly
+    @Published var isMonitoringEnabled: Bool = false
+    @Published var lastMonitoringRun: Date?
+
+    enum BreachMonitoringInterval: String, CaseIterable, Identifiable {
+        case daily = "Daily"
+        case weekly = "Weekly"
+        case biweekly = "Bi-Weekly"
+        case monthly = "Monthly"
+
+        var id: String { rawValue }
+
+        var seconds: TimeInterval {
+            switch self {
+            case .daily: return 86_400
+            case .weekly: return 604_800
+            case .biweekly: return 1_209_600
+            case .monthly: return 2_592_000
+            }
+        }
+    }
 
     init() {
         // C2: Load API key from Keychain instead of plaintext SQLite
         if let saved = PersistenceManager.shared.getKeychainValue(key: "hibp_api_key"), !saved.isEmpty {
             apiKey = saved
+        }
+
+        // Load monitoring settings
+        isMonitoringEnabled = PersistenceManager.shared.getBoolSetting(key: "breachMonitoringEnabled", defaultValue: false)
+        if let intervalStr = PersistenceManager.shared.getSetting(key: "breachMonitoringInterval"),
+           let interval = BreachMonitoringInterval(rawValue: intervalStr) {
+            monitoringInterval = interval
+        }
+        if let dateStr = PersistenceManager.shared.getSetting(key: "breachMonitoringLastRun") {
+            let formatter = ISO8601DateFormatter()
+            lastMonitoringRun = formatter.date(from: dateStr)
+        }
+
+        if isMonitoringEnabled {
+            startMonitoring()
         }
     }
 
@@ -303,6 +340,58 @@ class BreachCheckService: ObservableObject {
 
     func removeMonitoredEmail(_ email: String) {
         status.emailsMonitored.removeAll { $0 == email }
+    }
+
+    // MARK: - Monitoring Scheduler
+
+    func startMonitoring() {
+        stopMonitoring()
+        isMonitoringEnabled = true
+        PersistenceManager.shared.saveSetting(key: "breachMonitoringEnabled", value: "true")
+        PersistenceManager.shared.saveSetting(key: "breachMonitoringInterval", value: monitoringInterval.rawValue)
+
+        monitoringTimer = Timer.scheduledTimer(withTimeInterval: monitoringInterval.seconds, repeats: true) { [weak self] _ in
+            self?.runMonitoringCheck()
+        }
+
+        // Run immediately if never run or past due
+        if let lastRun = lastMonitoringRun {
+            if Date().timeIntervalSince(lastRun) >= monitoringInterval.seconds {
+                runMonitoringCheck()
+            }
+        } else {
+            runMonitoringCheck()
+        }
+    }
+
+    func stopMonitoring() {
+        monitoringTimer?.invalidate()
+        monitoringTimer = nil
+        isMonitoringEnabled = false
+        PersistenceManager.shared.saveSetting(key: "breachMonitoringEnabled", value: "false")
+    }
+
+    private func runMonitoringCheck() {
+        let emails = PersistenceManager.shared.loadMonitoredEmails()
+        guard !emails.isEmpty else { return }
+
+        lastMonitoringRun = Date()
+        let formatter = ISO8601DateFormatter()
+        PersistenceManager.shared.saveSetting(key: "breachMonitoringLastRun", value: formatter.string(from: Date()))
+
+        // Check each email with rate limiting
+        for (index, email) in emails.enumerated() {
+            let delay = Double(index) * (rateLimitInterval + 0.5)
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + delay) { [weak self] in
+                self?.performHIBPRequest(email: email)
+                // Send notification with results
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                    if let self = self, !self.breaches.isEmpty {
+                        NotificationManager.shared.sendBreachAlert(email: email, breachCount: self.breaches.count)
+                    }
+                }
+            }
+        }
     }
 }
 

@@ -6,19 +6,32 @@ class NotificationManager: ObservableObject {
 
     @Published var isAuthorized: Bool = false
 
+    /// Whether UNUserNotificationCenter is available (requires a proper app bundle)
+    private let notificationsAvailable: Bool
+
     enum Category: String {
         case threat = "THREAT_DETECTED"
         case breach = "BREACH_FOUND"
         case privacy = "PRIVACY_VIOLATION"
         case network = "NETWORK_ALERT"
+        case dns = "DNS_ALERT"
         case system = "SYSTEM_UPDATE"
     }
 
     private init() {
-        checkAuthorization()
+        // UNUserNotificationCenter crashes with NSInternalInconsistencyException if
+        // the process doesn't have a proper .app bundle (e.g. SwiftPM executables,
+        // CLI tools, or XPC services). Guard by checking the bundle path extension.
+        let bundleURL = Bundle.main.bundleURL
+        let isAppBundle = bundleURL.pathExtension == "app"
+        self.notificationsAvailable = isAppBundle
+        if isAppBundle {
+            checkAuthorization()
+        }
     }
 
     func requestPermission() {
+        guard notificationsAvailable else { return }
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { [weak self] granted, _ in
             DispatchQueue.main.async {
                 self?.isAuthorized = granted
@@ -30,6 +43,7 @@ class NotificationManager: ObservableObject {
     }
 
     private func checkAuthorization() {
+        guard notificationsAvailable else { return }
         UNUserNotificationCenter.current().getNotificationSettings { [weak self] settings in
             DispatchQueue.main.async {
                 self?.isAuthorized = settings.authorizationStatus == .authorized
@@ -66,8 +80,14 @@ class NotificationManager: ObservableObject {
             intentIdentifiers: []
         )
 
+        let dnsCategory = UNNotificationCategory(
+            identifier: Category.dns.rawValue,
+            actions: [viewAction, dismissAction],
+            intentIdentifiers: []
+        )
+
         UNUserNotificationCenter.current().setNotificationCategories([
-            threatCategory, breachCategory, privacyCategory, networkCategory
+            threatCategory, breachCategory, privacyCategory, networkCategory, dnsCategory
         ])
     }
 
@@ -139,8 +159,43 @@ class NotificationManager: ObservableObject {
         send(content, identifier: "network-\(UUID().uuidString)")
     }
 
+    func sendDNSAlert(domain: String, reason: String) {
+        guard isEnabled(for: .dns) else { return }
+
+        let content = UNMutableNotificationContent()
+        content.title = "DNS Alert"
+        content.subtitle = domain
+        content.body = reason
+        content.sound = .default
+        content.categoryIdentifier = Category.dns.rawValue
+
+        send(content, identifier: "dns-\(UUID().uuidString)")
+    }
+
+    /// Generic convenience used by services that just need title + body + category string
+    func sendNotification(title: String, body: String, category: String) {
+        let mappedCategory: Category
+        switch category.lowercased() {
+        case "threat": mappedCategory = .threat
+        case "breach": mappedCategory = .breach
+        case "privacy": mappedCategory = .privacy
+        case "network": mappedCategory = .network
+        case "dns": mappedCategory = .dns
+        default: mappedCategory = .system
+        }
+        guard isEnabled(for: mappedCategory) else { return }
+
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = .default
+        content.categoryIdentifier = mappedCategory.rawValue
+
+        send(content, identifier: "\(category)-\(UUID().uuidString)")
+    }
+
     private func send(_ content: UNMutableNotificationContent, identifier: String) {
-        guard isAuthorized else { return }
+        guard notificationsAvailable, isAuthorized else { return }
 
         let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 0.1, repeats: false)
         let request = UNNotificationRequest(identifier: identifier, content: content, trigger: trigger)
@@ -155,7 +210,7 @@ class NotificationManager: ObservableObject {
     // MARK: - Per-category Enable/Disable
 
     private func isEnabled(for category: Category) -> Bool {
-        guard isAuthorized else { return false }
+        guard notificationsAvailable, isAuthorized else { return false }
         let key = "notification_\(category.rawValue)"
         // Default to enabled
         return PersistenceManager.shared.getBoolSetting(key: key, defaultValue: true)

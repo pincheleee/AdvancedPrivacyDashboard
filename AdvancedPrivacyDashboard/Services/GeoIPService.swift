@@ -6,6 +6,7 @@ class GeoIPService: ObservableObject {
     @Published var cache: [String: GeoIPResult] = [:]
     @Published var isLookingUp: Bool = false
 
+    private let maxCacheSize = 500
     private let rateLimitDelay: TimeInterval = 1.5 // ip-api.com free tier: 45/min
     private var lastRequestTime: Date = .distantPast
     private let session: URLSession
@@ -71,6 +72,8 @@ class GeoIPService: ObservableObject {
 
         lastRequestTime = Date()
 
+        // Validate IP format before interpolation to prevent URL manipulation
+        guard ip.range(of: #"^[\d.:a-fA-F]+$"#, options: .regularExpression) != nil else { return nil }
         // C3: Use HTTPS via ipapi.co instead of plaintext HTTP ip-api.com
         guard let url = URL(string: "https://ipapi.co/\(ip)/json/") else { return nil }
 
@@ -80,7 +83,29 @@ class GeoIPService: ObservableObject {
 
             if result.status == "success" || result.country != nil {
                 await MainActor.run {
+                    // Evict oldest entries when cache exceeds max size
+                    if cache.count >= maxCacheSize {
+                        let keysToRemove = Array(cache.keys.prefix(cache.count / 4))
+                        for key in keysToRemove { cache.removeValue(forKey: key) }
+                    }
                     cache[ip] = result
+
+                    // Notify on suspicious org (hosting, VPN, proxy, etc.)
+                    if result.isSuspicious {
+                        let orgName = result.org ?? "Unknown"
+                        let location = result.displayName
+                        NotificationManager.shared.sendNotification(
+                            title: "Suspicious Connection Detected",
+                            body: "\(ip) → \(orgName) (\(location))",
+                            category: "network"
+                        )
+                        PersistenceManager.shared.logActivity(
+                            category: "network",
+                            title: "Suspicious GeoIP org",
+                            detail: "\(ip) resolved to \(orgName) in \(location)",
+                            severity: "medium"
+                        )
+                    }
                 }
                 return result
             }

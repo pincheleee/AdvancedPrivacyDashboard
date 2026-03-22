@@ -46,27 +46,33 @@ class BlocklistImporter: ObservableObject {
         importStatus = "Downloading \(source.rawValue)..."
 
         URLSession.shared.dataTask(with: url) { [weak self] data, _, error in
-            DispatchQueue.main.async {
-                guard let self = self else { return }
+            guard let self = self else { return }
 
-                if let error = error {
+            if let error = error {
+                DispatchQueue.main.async {
                     self.importStatus = "Failed: \(error.localizedDescription)"
                     self.isImporting = false
-                    return
                 }
+                return
+            }
 
-                guard let data = data, let content = String(data: data, encoding: .utf8) else {
+            guard let data = data, let content = String(data: data, encoding: .utf8) else {
+                DispatchQueue.main.async {
                     self.importStatus = "Failed: Invalid data"
                     self.isImporting = false
-                    return
                 }
+                return
+            }
 
+            DispatchQueue.global(qos: .utility).async {
                 let domains = self.parseBlocklist(content, source: source)
                 let count = PersistenceManager.shared.importBlocklist(domains, source: source.rawValue)
 
-                self.lastImportCount = count
-                self.importStatus = "Imported \(count) domains from \(source.rawValue)"
-                self.isImporting = false
+                DispatchQueue.main.async {
+                    self.lastImportCount = count
+                    self.importStatus = "Imported \(count) domains from \(source.rawValue)"
+                    self.isImporting = false
+                }
             }
         }.resume()
     }

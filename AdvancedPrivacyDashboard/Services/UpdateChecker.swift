@@ -5,7 +5,7 @@ class UpdateChecker: ObservableObject {
 
     @Published var updateAvailable: Bool = false
     @Published var latestVersion: String = ""
-    @Published var currentVersion: String = "2.0.0"
+    @Published var currentVersion: String = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "2.0.0"
     @Published var releaseNotes: String = ""
     @Published var downloadURL: String = ""
     @Published var isChecking: Bool = false
@@ -55,7 +55,10 @@ class UpdateChecker: ObservableObject {
 
                 if let assets = json["assets"] as? [[String: Any]],
                    let firstAsset = assets.first,
-                   let browserURL = firstAsset["browser_download_url"] as? String {
+                   let browserURL = firstAsset["browser_download_url"] as? String,
+                   let urlObj = URL(string: browserURL),
+                   let host = urlObj.host,
+                   (host.hasSuffix("github.com") || host.hasSuffix("githubusercontent.com")) {
                     self.downloadURL = browserURL
                 }
 
