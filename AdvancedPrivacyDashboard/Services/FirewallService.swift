@@ -81,28 +81,14 @@ class FirewallService: ObservableObject {
                 self?.status.stealthMode = stealthMode
                 self?.status.rulesCount = self?.rules.count ?? 0
                 self?.status.lastUpdated = Date()
+                WidgetDataWriter.shared.notifyWidget()
             }
         }
     }
 
-    /// C1: Reads pipe before waitUntilExit.
     private func checkStealthMode() -> Bool {
-        let task = Process()
-        let pipe = Pipe()
-        task.executableURL = URL(fileURLWithPath: "/usr/libexec/ApplicationFirewall/socketfilterfw")
-        task.arguments = ["--getstealthmode"]
-        task.standardOutput = pipe
-        task.standardError = FileHandle.nullDevice
-
-        do {
-            try task.run()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            task.waitUntilExit()
-            let output = String(data: data, encoding: .utf8) ?? ""
-            return output.contains("enabled")
-        } catch {
-            return false
-        }
+        let output = SystemCommandRunner.runSync(.socketfilterfwStealthMode)
+        return output.contains("enabled")
     }
 
     func addRule(_ rule: FirewallRule) {
@@ -200,31 +186,15 @@ class FirewallService: ObservableObject {
         }
     }
 
-    /// C1: Reads pipe before waitUntilExit.
     func getBlockedApps() -> [String] {
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            let task = Process()
-            let pipe = Pipe()
-            task.executableURL = URL(fileURLWithPath: "/usr/libexec/ApplicationFirewall/socketfilterfw")
-            task.arguments = ["--listapps"]
-            task.standardOutput = pipe
-            task.standardError = FileHandle.nullDevice
-
-            var results: [String] = []
-            do {
-                try task.run()
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                task.waitUntilExit()
-                let output = String(data: data, encoding: .utf8) ?? ""
-                results = output.components(separatedBy: "\n")
-                    .filter { $0.contains("Block") }
-                    .compactMap { line in
-                        let parts = line.split(separator: ":")
-                        return parts.first.map { String($0).trimmingCharacters(in: .whitespaces) }
-                    }
-            } catch {
-                // Silently fail -- results stays empty
-            }
+            let output = SystemCommandRunner.runSync(.socketfilterfwListApps)
+            let results = output.components(separatedBy: "\n")
+                .filter { $0.contains("Block") }
+                .compactMap { line in
+                    let parts = line.split(separator: ":")
+                    return parts.first.map { String($0).trimmingCharacters(in: .whitespaces) }
+                }
 
             DispatchQueue.main.async {
                 self?.blockedApps = results
@@ -233,32 +203,15 @@ class FirewallService: ObservableObject {
         return blockedApps
     }
 
-    /// C1: Reads pipe before waitUntilExit.
     func refreshConnectionLog() {
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            let task = Process()
-            let pipe = Pipe()
-            task.executableURL = URL(fileURLWithPath: "/usr/bin/log")
-            task.arguments = ["show", "--predicate",
-                              "subsystem == \"com.apple.alf\"",
-                              "--last", "30s", "--style", "compact"]
-            task.standardOutput = pipe
-            task.standardError = FileHandle.nullDevice
+            let output = SystemCommandRunner.runSync(.logShowFirewall)
+            let entries = output.components(separatedBy: "\n")
+                .filter { !$0.isEmpty }
+                .suffix(20)
 
-            do {
-                try task.run()
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                task.waitUntilExit()
-                let output = String(data: data, encoding: .utf8) ?? ""
-                let entries = output.components(separatedBy: "\n")
-                    .filter { !$0.isEmpty }
-                    .suffix(20)
-
-                DispatchQueue.main.async {
-                    self?.connectionLog = Array(entries)
-                }
-            } catch {
-                // Silently fail
+            DispatchQueue.main.async {
+                self?.connectionLog = Array(entries)
             }
         }
     }

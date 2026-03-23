@@ -2,6 +2,8 @@ import Foundation
 import AppKit
 
 class BlocklistImporter: ObservableObject {
+    static let shared = BlocklistImporter()
+
     @Published var importStatus: String = ""
     @Published var isImporting: Bool = false
     @Published var lastImportCount: Int = 0

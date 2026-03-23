@@ -2,13 +2,12 @@ import SwiftUI
 import Charts
 
 struct OverviewView: View {
-    @ObservedObject private var networkService = NetworkService.shared
-    @ObservedObject private var firewallService = FirewallService.shared
-    @ObservedObject private var vpnDetector = VPNDetector.shared
-    @ObservedObject private var scanService = ScanService.shared
+    @EnvironmentObject var networkService: NetworkService
+    @EnvironmentObject var firewallService: FirewallService
+    @EnvironmentObject var vpnDetector: VPNDetector
+    @EnvironmentObject var scanService: ScanService
     @State private var animateCards = false
     @State private var lastScanTime = Date()
-    @State private var historicalTrafficData: [NetworkTrafficPoint] = []
     @State private var privacyScore: Int = 0
     @State private var animateScore = false
     @State private var showScoreDrillDown = false
@@ -82,45 +81,9 @@ struct OverviewView: View {
                 }
                 .padding(.horizontal)
 
-                // Quick traffic chart
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("Network Activity")
-                        .font(.headline)
-
-                    NetworkTrafficChart(
-                        data: networkService.trafficHistory.dataPoints,
-                        timeRange: .hour
-                    )
-                    .frame(height: 160)
-                }
-                .padding()
-                .background(RoundedRectangle(cornerRadius: 12)
-                    .fill(.ultraThinMaterial))
-                .padding(.horizontal)
-
-                // Historical traffic chart (24h persisted data)
-                if !historicalTrafficData.isEmpty {
-                    VStack(alignment: .leading, spacing: 12) {
-                        HStack {
-                            Text("24-Hour Traffic History")
-                                .font(.headline)
-                            Spacer()
-                            Text("\(historicalTrafficData.count) data points")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-
-                        NetworkTrafficChart(
-                            data: historicalTrafficData,
-                            timeRange: .day
-                        )
-                        .frame(height: 160)
-                    }
-                    .padding()
-                    .background(RoundedRectangle(cornerRadius: 12)
-                        .fill(.ultraThinMaterial))
+                // Compact traffic chart — prefer historical data when available
+                overviewTrafficChart
                     .padding(.horizontal)
-                }
 
                 recentActivitySection
             }
@@ -131,7 +94,6 @@ struct OverviewView: View {
             withAnimation(.easeOut(duration: 0.6)) {
                 animateCards = true
             }
-            await loadHistoricalDataAsync()
             await calculatePrivacyScoreAsync()
             withAnimation(.easeOut(duration: 1.0).delay(0.3)) {
                 animateScore = true
@@ -354,19 +316,6 @@ struct OverviewView: View {
         scoreFactors = factors
     }
 
-    private func loadHistoricalDataAsync() async {
-        let history = await Task.detached(priority: .utility) {
-            PersistenceManager.shared.loadTrafficHistory(hours: 24)
-        }.value
-        historicalTrafficData = history.map { point in
-            NetworkTrafficPoint(
-                timestamp: point.timestamp,
-                downloadSpeed: point.download,
-                uploadSpeed: point.upload
-            )
-        }
-    }
-
     // MARK: - VPN Status Pill
 
     private var vpnStatusPill: some View {
@@ -427,7 +376,6 @@ struct OverviewView: View {
                     animateCards = true
                 }
                 Task { firewallService.refreshStatus() }
-                Task { await loadHistoricalDataAsync() }
             }) {
                 Label("Refresh", systemImage: "arrow.clockwise")
             }
@@ -468,6 +416,157 @@ struct OverviewView: View {
         .background(RoundedRectangle(cornerRadius: 12)
             .fill(.ultraThinMaterial))
         .padding(.horizontal)
+    }
+
+    /// Single compact traffic chart for the overview page.
+    /// Always shows the live traffic buffer so it updates in real time.
+    private var overviewTrafficChart: some View {
+        let liveData = networkService.trafficHistory.dataPoints
+
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Image(systemName: "chart.xyaxis.line")
+                    .foregroundColor(.blue)
+                    .font(.subheadline)
+                Text("Network Activity")
+                    .font(.headline)
+                Spacer()
+                Text("Live")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(Capsule().fill(Color.blue.opacity(0.1)))
+            }
+
+            if liveData.count < 2 {
+                HStack {
+                    Spacer()
+                    VStack(spacing: 4) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Collecting data\u{2026}")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    Spacer()
+                }
+                .frame(height: 120)
+            } else {
+                Chart(liveData) { point in
+                    AreaMark(
+                        x: .value("Time", point.timestamp),
+                        yStart: .value("Baseline", 0),
+                        yEnd: .value("Download", point.downloadSpeed * 1024)
+                    )
+                    .foregroundStyle(
+                        .linearGradient(
+                            colors: [Color.blue.opacity(0.3), Color.blue.opacity(0.02)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+                    .interpolationMethod(.catmullRom)
+
+                    LineMark(
+                        x: .value("Time", point.timestamp),
+                        y: .value("Download", point.downloadSpeed * 1024),
+                        series: .value("Series", "Download")
+                    )
+                    .foregroundStyle(Color.blue)
+                    .lineStyle(StrokeStyle(lineWidth: 2.0, lineCap: .round))
+                    .interpolationMethod(.catmullRom)
+
+                    AreaMark(
+                        x: .value("Time", point.timestamp),
+                        yStart: .value("Baseline", 0),
+                        yEnd: .value("Upload", point.uploadSpeed * 1024)
+                    )
+                    .foregroundStyle(
+                        .linearGradient(
+                            colors: [Color.green.opacity(0.2), Color.green.opacity(0.01)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+                    .interpolationMethod(.catmullRom)
+
+                    LineMark(
+                        x: .value("Time", point.timestamp),
+                        y: .value("Upload", point.uploadSpeed * 1024),
+                        series: .value("Series", "Upload")
+                    )
+                    .foregroundStyle(Color.green)
+                    .lineStyle(StrokeStyle(lineWidth: 2.0, lineCap: .round))
+                    .interpolationMethod(.catmullRom)
+                }
+                .chartXAxis {
+                    AxisMarks(values: .automatic(desiredCount: 5)) { value in
+                        AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5, dash: [3, 3]))
+                            .foregroundStyle(Color.gray.opacity(0.15))
+                        if let date = value.as(Date.self) {
+                            AxisValueLabel {
+                                Text(overviewTimeLabel(date))
+                                    .font(.system(size: 9))
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                    }
+                }
+                .chartYAxis {
+                    AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { value in
+                        AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5, dash: [3, 3]))
+                            .foregroundStyle(Color.gray.opacity(0.15))
+                        if let speed = value.as(Double.self) {
+                            AxisValueLabel {
+                                Text(speed >= 1024 ? String(format: "%.0f MB/s", speed / 1024) : String(format: "%.0f KB/s", speed))
+                                    .font(.system(size: 9))
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                    }
+                }
+                .chartLegend(.hidden)
+                .frame(height: 140)
+            }
+
+            // Compact inline legend with live speed
+            HStack(spacing: 16) {
+                HStack(spacing: 4) {
+                    RoundedRectangle(cornerRadius: 1.5).fill(Color.blue).frame(width: 10, height: 3)
+                    Text("Down").font(.caption2).foregroundColor(.secondary)
+                    Text(networkService.networkStats.formattedDownloadSpeed)
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundColor(.blue)
+                }
+                HStack(spacing: 4) {
+                    RoundedRectangle(cornerRadius: 1.5).fill(Color.green).frame(width: 10, height: 3)
+                    Text("Up").font(.caption2).foregroundColor(.secondary)
+                    Text(networkService.networkStats.formattedUploadSpeed)
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundColor(.green)
+                }
+                Spacer()
+                Text("\(liveData.count) samples")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+        }
+        .padding()
+        .background(RoundedRectangle(cornerRadius: 12).fill(.ultraThinMaterial))
+    }
+
+    private func overviewTimeLabel(_ date: Date) -> String {
+        let elapsed = Date().timeIntervalSince(date)
+        if elapsed < 60 {
+            return "\(Int(elapsed))s"
+        } else if elapsed < 3600 {
+            return "\(Int(elapsed / 60))m"
+        } else {
+            let formatter = DateFormatter()
+            formatter.dateFormat = "h:mm a"
+            return formatter.string(from: date)
+        }
     }
 
     private var recentActivitySection: some View {

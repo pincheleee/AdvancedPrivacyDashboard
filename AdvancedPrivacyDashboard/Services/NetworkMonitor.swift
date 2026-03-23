@@ -116,30 +116,13 @@ class NetworkMonitor: ObservableObject {
         }
     }
 
-    /// Read real byte counters from the system using netstat.
-    /// C1/C5: Reads pipe before waitUntilExit to prevent deadlock.
     private func readSystemNetworkBytes() -> (bytesIn: UInt64, bytesOut: UInt64) {
-        let task = Process()
-        let pipe = Pipe()
-        task.executableURL = URL(fileURLWithPath: "/usr/sbin/netstat")
-        task.arguments = ["-ib"]
-        task.standardOutput = pipe
-        task.standardError = FileHandle.nullDevice
-
-        do {
-            try task.run()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            task.waitUntilExit()
-            guard let output = String(data: data, encoding: .utf8) else {
-                return (0, 0)
-            }
-            return parseNetstatBytes(output)
-        } catch {
-            return (0, 0)
-        }
+        let output = SystemCommandRunner.runSync(.netstatInterfaces)
+        guard !output.isEmpty else { return (0, 0) }
+        return parseNetstatBytes(output)
     }
 
-    private func parseNetstatBytes(_ output: String) -> (bytesIn: UInt64, bytesOut: UInt64) {
+    func parseNetstatBytes(_ output: String) -> (bytesIn: UInt64, bytesOut: UInt64) {
         var totalIn: UInt64 = 0
         var totalOut: UInt64 = 0
         var seenInterfaces = Set<String>()
@@ -171,27 +154,12 @@ class NetworkMonitor: ObservableObject {
         return (totalIn, totalOut)
     }
 
-    /// Get active connection count from netstat.
-    /// C1: Reads pipe before waitUntilExit.
     private func getActiveConnectionCount() -> Int {
-        let task = Process()
-        let pipe = Pipe()
-        task.executableURL = URL(fileURLWithPath: "/usr/sbin/netstat")
-        task.arguments = ["-an", "-p", "tcp"]
-        task.standardOutput = pipe
-        task.standardError = FileHandle.nullDevice
-
-        do {
-            try task.run()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            task.waitUntilExit()
-            guard let output = String(data: data, encoding: .utf8) else { return 0 }
-            return output.components(separatedBy: "\n")
-                .filter { $0.contains("ESTABLISHED") }
-                .count
-        } catch {
-            return 0
-        }
+        let output = SystemCommandRunner.runSync(.netstatTCP)
+        guard !output.isEmpty else { return 0 }
+        return output.components(separatedBy: "\n")
+            .filter { $0.contains("ESTABLISHED") }
+            .count
     }
 
     private func startPerformanceMonitoring() {
@@ -202,50 +170,36 @@ class NetworkMonitor: ObservableObject {
         }
     }
 
-    /// C1: Reads pipe before waitUntilExit.
     private func analyzeTrafficPatterns() {
-        let task = Process()
-        let pipe = Pipe()
-        task.executableURL = URL(fileURLWithPath: "/usr/sbin/netstat")
-        task.arguments = ["-an", "-p", "tcp"]
-        task.standardOutput = pipe
-        task.standardError = FileHandle.nullDevice
+        let output = SystemCommandRunner.runSync(.netstatTCP)
+        guard !output.isEmpty else { return }
 
-        do {
-            try task.run()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            task.waitUntilExit()
-            guard let output = String(data: data, encoding: .utf8) else { return }
+        let connections = output.components(separatedBy: "\n")
+            .filter { $0.contains("ESTABLISHED") }
 
-            let connections = output.components(separatedBy: "\n")
-                .filter { $0.contains("ESTABLISHED") }
-
-            let suspiciousPorts = [4444, 5555, 6666, 31337, 12345, 1337, 9999]
-            stateQueue.sync {
-                for conn in connections {
-                    let parts = conn.split(separator: " ", omittingEmptySubsequences: true)
-                    guard parts.count >= 5 else { continue }
-                    let foreignAddr = String(parts[4])
-                    if let portStr = foreignAddr.split(separator: ".").last,
-                       let port = Int(portStr),
-                       suspiciousPorts.contains(port) {
-                        let threat = SecurityThreat(
-                            type: .suspiciousConnection,
-                            description: "Connection to suspicious port \(port)",
-                            severity: 3,
-                            timestamp: Date(),
-                            sourceIP: String(parts[3]),
-                            destinationIP: foreignAddr
-                        )
-                        securityThreats.append(threat)
-                        if securityThreats.count > 50 {
-                            securityThreats.removeFirst()
-                        }
+        let suspiciousPorts = [4444, 5555, 6666, 31337, 12345, 1337, 9999]
+        stateQueue.sync {
+            for conn in connections {
+                let parts = conn.split(separator: " ", omittingEmptySubsequences: true)
+                guard parts.count >= 5 else { continue }
+                let foreignAddr = String(parts[4])
+                if let portStr = foreignAddr.split(separator: ".").last,
+                   let port = Int(portStr),
+                   suspiciousPorts.contains(port) {
+                    let threat = SecurityThreat(
+                        type: .suspiciousConnection,
+                        description: "Connection to suspicious port \(port)",
+                        severity: 3,
+                        timestamp: Date(),
+                        sourceIP: String(parts[3]),
+                        destinationIP: foreignAddr
+                    )
+                    securityThreats.append(threat)
+                    if securityThreats.count > 50 {
+                        securityThreats.removeFirst()
                     }
                 }
             }
-        } catch {
-            // Silently fail
         }
     }
 

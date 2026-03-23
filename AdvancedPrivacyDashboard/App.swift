@@ -50,7 +50,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         UpdateChecker.shared.schedulePeriodicCheck()
 
         if isAppBundle {
-            WidgetDataWriter.shared.startPeriodicUpdates()
+            WidgetDataWriter.shared.notifyWidget()
         }
 
         _ = PersistenceManager.shared
@@ -69,6 +69,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func createMainWindow() {
         let contentView = ContentView()
+            .environmentObject(NetworkService.shared)
+            .environmentObject(FirewallService.shared)
+            .environmentObject(ScanService.shared)
+            .environmentObject(VPNDetector.shared)
+            .environmentObject(GeoIPService.shared)
+            .environmentObject(ConnectionTrustStore.shared)
+            .environmentObject(UpdateChecker.shared)
+            .environmentObject(NotificationManager.shared)
+            .environmentObject(ExportService.shared)
+            .environmentObject(BlocklistImporter.shared)
         let hostingController = NSHostingController(rootView: contentView)
         hostingController.view.frame = NSRect(x: 0, y: 0, width: 1200, height: 800)
 
@@ -110,7 +120,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let popover = NSPopover()
         popover.contentSize = NSSize(width: 320, height: 450)
         popover.behavior = .transient
-        popover.contentViewController = NSHostingController(rootView: MenuBarView())
+        popover.contentViewController = NSHostingController(rootView:
+            MenuBarView()
+                .environmentObject(NetworkService.shared)
+                .environmentObject(VPNDetector.shared)
+                .environmentObject(ScanService.shared)
+                .environmentObject(FirewallService.shared)
+        )
         self.popover = popover
     }
 
@@ -125,10 +141,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 struct MenuBarView: View {
-    @ObservedObject private var networkService = NetworkService.shared
-    @ObservedObject private var vpnDetector = VPNDetector.shared
-    @ObservedObject private var scanService = ScanService.shared
-    @ObservedObject private var firewallService = FirewallService.shared
+    @EnvironmentObject var networkService: NetworkService
+    @EnvironmentObject var vpnDetector: VPNDetector
+    @EnvironmentObject var scanService: ScanService
+    @EnvironmentObject var firewallService: FirewallService
 
     var body: some View {
         VStack(spacing: 10) {

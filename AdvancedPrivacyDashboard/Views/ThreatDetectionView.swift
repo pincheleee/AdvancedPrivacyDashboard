@@ -2,6 +2,7 @@ import SwiftUI
 import Charts
 
 struct ThreatDetectionView: View {
+    @EnvironmentObject var scanService: ScanService
     @State private var scanProgress: Double = 0.0
     @State private var isScanning: Bool = false
     @State private var scanComplete: Bool = false
@@ -266,7 +267,7 @@ struct ThreatDetectionView: View {
         threats.removeAll()
         currentCheckName = ""
 
-        ScanService.shared.runScan { detected in
+        scanService.runScan { detected in
             isScanning = false
             scanComplete = true
             lastScanDate = Date()
@@ -299,8 +300,8 @@ struct ThreatDetectionView: View {
 
         // Bind progress from the shared service
         Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { timer in
-            scanProgress = ScanService.shared.scanProgress
-            if !ScanService.shared.isScanning {
+            scanProgress = scanService.scanProgress
+            if !scanService.isScanning {
                 timer.invalidate()
             }
         }

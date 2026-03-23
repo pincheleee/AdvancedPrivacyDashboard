@@ -160,7 +160,6 @@ class ExportService: ObservableObject {
     /// Generate a security report
     static func generateSecurityReport() -> String {
         let persistence = PersistenceManager.shared
-        let dnsStats = persistence.getDNSQueryCount()
         let threats = persistence.getRecentThreats()
 
         var report = """
@@ -180,12 +179,6 @@ class ExportService: ObservableObject {
 
         report += """
 
-
-        DNS MONITORING (Last 24h)
-        ----------------------------------------
-        Total queries: \(dnsStats.total)
-        Blocked: \(dnsStats.blocked)
-        Suspicious: \(dnsStats.suspicious)
 
         FIREWALL
         ----------------------------------------

@@ -22,5 +22,10 @@ let package = Package(
             path: "AdvancedPrivacyDashboard",
             exclude: ["Resources", "AdvancedPrivacyDashboard.entitlements", "Info.plist"]
         ),
+        .testTarget(
+            name: "AdvancedPrivacyDashboardTests",
+            dependencies: ["AdvancedPrivacyDashboard"],
+            path: "Tests"
+        ),
     ]
 ) 

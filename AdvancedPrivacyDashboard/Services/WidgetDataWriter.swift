@@ -1,11 +1,14 @@
 import Foundation
+#if canImport(WidgetKit)
+import WidgetKit
+#endif
 
 /// Writes app state to the shared App Group UserDefaults so the widget extension can read it.
+/// Call `notifyWidget()` after any state change instead of polling on a timer.
 class WidgetDataWriter {
     static let shared = WidgetDataWriter()
 
     private let defaults = UserDefaults(suiteName: "group.com.privacydashboard.shared")
-    private var timer: Timer?
 
     private enum Key {
         static let isSecure = "isSecure"
@@ -21,42 +24,27 @@ class WidgetDataWriter {
 
     private init() {}
 
-    // MARK: - Periodic Updates
+    // MARK: - Event-Driven Widget Update
 
-    func startPeriodicUpdates() {
-        guard timer == nil else { return }
-
-        writeCurrentState()
-
-        timer = Timer.scheduledTimer(withTimeInterval: 30.0, repeats: true) { [weak self] _ in
-            self?.writeCurrentState()
-        }
-    }
-
-    func stopPeriodicUpdates() {
-        timer?.invalidate()
-        timer = nil
-    }
-
-    // MARK: - Manual Update
-
-    func writeCurrentState() {
-        // Dispatch to background to avoid blocking main thread with Process calls
+    /// Writes current app state to shared defaults and tells WidgetKit to reload timelines.
+    /// Call this after any meaningful state change (scan complete, firewall toggle, VPN change, etc.).
+    func notifyWidget() {
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self = self else { return }
             let vpnActive = VPNDetector.shared.isVPNActive
-            // S1: Use centralized firewall check
             let firewallEnabled = SystemCommandRunner.isFirewallEnabled()
             let threatCount = ScanService.shared.lastScanThreats.count
 
-            DispatchQueue.main.async {
-                self.defaults?.set(threatCount == 0 && firewallEnabled, forKey: Key.isSecure)
-                self.defaults?.set(threatCount, forKey: Key.threatsCount)
-                self.defaults?.set(true, forKey: Key.networkConnected)
-                self.defaults?.set(vpnActive, forKey: Key.vpnActive)
-                self.defaults?.set(firewallEnabled, forKey: Key.firewallEnabled)
-                self.defaults?.set(Date().timeIntervalSince1970, forKey: Key.lastUpdated)
-            }
+            self.defaults?.set(threatCount == 0 && firewallEnabled, forKey: Key.isSecure)
+            self.defaults?.set(threatCount, forKey: Key.threatsCount)
+            self.defaults?.set(true, forKey: Key.networkConnected)
+            self.defaults?.set(vpnActive, forKey: Key.vpnActive)
+            self.defaults?.set(firewallEnabled, forKey: Key.firewallEnabled)
+            self.defaults?.set(Date().timeIntervalSince1970, forKey: Key.lastUpdated)
+
+            #if canImport(WidgetKit)
+            WidgetCenter.shared.reloadAllTimelines()
+            #endif
         }
     }
 
@@ -77,6 +65,10 @@ class WidgetDataWriter {
         defaults?.set(downloadSpeed, forKey: Key.downloadSpeed)
         defaults?.set(uploadSpeed, forKey: Key.uploadSpeed)
         defaults?.set(Date().timeIntervalSince1970, forKey: Key.lastUpdated)
+
+        #if canImport(WidgetKit)
+        WidgetCenter.shared.reloadAllTimelines()
+        #endif
     }
 
     func updateNetworkStats(downloadSpeed: String, uploadSpeed: String, activeConnections: Int) {

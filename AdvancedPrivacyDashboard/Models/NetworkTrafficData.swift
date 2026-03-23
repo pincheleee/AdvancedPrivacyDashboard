@@ -1,10 +1,11 @@
 import Foundation
 
 struct NetworkTrafficPoint: Identifiable {
-    let id = UUID()
     let timestamp: Date
     let downloadSpeed: Double
     let uploadSpeed: Double
+
+    var id: TimeInterval { timestamp.timeIntervalSinceReferenceDate }
 }
 
 /// Changed from ObservableObject to struct to fix nested-ObservableObject issue (W4).

@@ -61,6 +61,7 @@ class ScanService: ObservableObject {
                         self.lastScanDate = Date()
                         self.lastScanThreats = detected
                         self.securityScore = self.calculateScore(from: detected)
+                        WidgetDataWriter.shared.notifyWidget()
                         completion?(detected)
                     }
                 }
@@ -78,6 +79,7 @@ class ScanService: ObservableObject {
                 self.lastScanDate = Date()
                 self.lastScanThreats = detected
                 self.securityScore = self.calculateScore(from: detected)
+                WidgetDataWriter.shared.notifyWidget()
             }
 
             // W3: Only log to persistence here; notification handles its own logging
@@ -226,42 +228,28 @@ class ScanService: ObservableObject {
     // All use read-before-wait pattern (C1/C5)
 
     func checkSIPStatus() -> Bool? {
-        let output = SystemCommandRunner.runSync("/usr/bin/csrutil", arguments: ["status"])
+        let output = SystemCommandRunner.runSync(.csrutilStatus)
         guard !output.isEmpty else { return nil }
         return output.contains("disabled")
     }
 
     func checkGatekeeperDisabled() -> Bool {
-        let task = Process()
-        let pipe = Pipe()
-        task.executableURL = URL(fileURLWithPath: "/usr/sbin/spctl")
-        task.arguments = ["--status"]
-        task.standardOutput = pipe
-        task.standardError = pipe
-
-        do {
-            try task.run()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            task.waitUntilExit()
-            let output = String(data: data, encoding: .utf8) ?? ""
-            return output.contains("disabled")
-        } catch {
-            return false
-        }
+        let output = SystemCommandRunner.runSync(.spctlStatus)
+        return output.contains("disabled")
     }
 
     func checkRemoteLoginEnabled() -> Bool {
-        let output = SystemCommandRunner.runSync("/bin/launchctl", arguments: ["list"])
+        let output = SystemCommandRunner.runSync(.launchctlList)
         return output.contains("com.openssh.sshd")
     }
 
     func checkFileVaultEnabled() -> Bool {
-        let output = SystemCommandRunner.runSync("/usr/bin/fdesetup", arguments: ["status"])
+        let output = SystemCommandRunner.runSync(.fdesetupStatus)
         return output.contains("On")
     }
 
     func checkSuspiciousConnections() -> [String] {
-        let output = SystemCommandRunner.runSync("/usr/sbin/netstat", arguments: ["-an", "-p", "tcp"])
+        let output = SystemCommandRunner.runSync(.netstatTCP)
         let suspiciousPorts = [4444, 5555, 6666, 31337, 12345, 1337, 9999]
         var results: [String] = []
         for line in output.components(separatedBy: "\n") where line.contains("ESTABLISHED") {
@@ -277,43 +265,13 @@ class ScanService: ObservableObject {
         return results
     }
 
-    /// W1: Uses explicit executable + arguments instead of shell().
     func checkWorldWritablePaths() -> Bool {
-        let task = Process()
-        let pipe = Pipe()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/find")
-        task.arguments = ["/usr/local", "-maxdepth", "2", "-perm", "-0002", "-type", "d"]
-        task.standardOutput = pipe
-        task.standardError = FileHandle.nullDevice
-
-        do {
-            try task.run()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            task.waitUntilExit()
-            let output = String(data: data, encoding: .utf8) ?? ""
-            return !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        } catch {
-            return false
-        }
+        let output = SystemCommandRunner.runSync(.findWorldWritable)
+        return !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    /// W1: Uses explicit executable + arguments instead of shell().
     func checkScreenLockEnabled() -> Bool {
-        let task = Process()
-        let pipe = Pipe()
-        task.executableURL = URL(fileURLWithPath: "/usr/sbin/sysadminctl")
-        task.arguments = ["-screenLock", "status"]
-        task.standardOutput = pipe
-        task.standardError = pipe
-
-        do {
-            try task.run()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            task.waitUntilExit()
-            let output = String(data: data, encoding: .utf8) ?? ""
-            return output.contains("screenLock is on") || output.contains("enabled")
-        } catch {
-            return false
-        }
+        let output = SystemCommandRunner.runSync(.sysadminctlScreenLock)
+        return output.contains("screenLock is on") || output.contains("enabled")
     }
 }

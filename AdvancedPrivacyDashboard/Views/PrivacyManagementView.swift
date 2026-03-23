@@ -270,72 +270,46 @@ struct PrivacyManagementView: View {
     }
 
     private func fetchInstalledApps() -> [PrivacyApp] {
-        let task = Process()
-        let pipe = Pipe()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/mdfind")
-        task.arguments = ["kMDItemKind == 'Application'"]
-        task.standardOutput = pipe
-        task.standardError = FileHandle.nullDevice
+        let output = SystemCommandRunner.runSync(.mdfindApplications)
+        guard !output.isEmpty else { return [] }
 
-        do {
-            try task.run()
-            // C1: Read pipe before waitUntilExit to prevent deadlock
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            task.waitUntilExit()
-            guard let output = String(data: data, encoding: .utf8) else { return [] }
+        var apps: [PrivacyApp] = []
+        for path in output.components(separatedBy: "\n") where !path.isEmpty {
+            let url = URL(fileURLWithPath: path)
+            let name = url.deletingPathExtension().lastPathComponent
 
-            var apps: [PrivacyApp] = []
-            for path in output.components(separatedBy: "\n") where !path.isEmpty {
-                let url = URL(fileURLWithPath: path)
-                let name = url.deletingPathExtension().lastPathComponent
-
-                // Get bundle ID from Info.plist
-                let plistPath = url.appendingPathComponent("Contents/Info.plist")
-                if let plistData = try? Data(contentsOf: plistPath),
-                   let plist = try? PropertyListSerialization.propertyList(from: plistData, format: nil) as? [String: Any],
-                   let bundleId = plist["CFBundleIdentifier"] as? String {
-                    apps.append(PrivacyApp(name: name, bundleId: bundleId))
-                }
+            // Get bundle ID from Info.plist
+            let plistPath = url.appendingPathComponent("Contents/Info.plist")
+            if let plistData = try? Data(contentsOf: plistPath),
+               let plist = try? PropertyListSerialization.propertyList(from: plistData, format: nil) as? [String: Any],
+               let bundleId = plist["CFBundleIdentifier"] as? String {
+                apps.append(PrivacyApp(name: name, bundleId: bundleId))
             }
-
-            return apps.sorted { $0.name.localizedCompare($1.name) == .orderedAscending }
-                .prefix(100)
-                .map { $0 }
-        } catch {
-            return []
         }
+
+        return apps.sorted { $0.name.localizedCompare($1.name) == .orderedAscending }
+            .prefix(100)
+            .map { $0 }
     }
 
     private func fetchTCCPermissions() -> [String: [String]] {
-        // Read from TCC database (user-level, doesn't require root)
         let tccPath = NSHomeDirectory() + "/Library/Application Support/com.apple.TCC/TCC.db"
-        let task = Process()
-        let pipe = Pipe()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
-        task.arguments = [tccPath, "SELECT client, service FROM access WHERE allowed = 1;"]
-        task.standardOutput = pipe
-        task.standardError = FileHandle.nullDevice
+        let output = SystemCommandRunner.runSync(.sqlite3Query(
+            db: tccPath,
+            query: "SELECT client, service FROM access WHERE allowed = 1;"
+        ))
+        guard !output.isEmpty else { return [:] }
 
-        do {
-            try task.run()
-            // C1: Read pipe before waitUntilExit to prevent deadlock
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            task.waitUntilExit()
-            guard let output = String(data: data, encoding: .utf8) else { return [:] }
-
-            var permissions: [String: [String]] = [:]
-            for line in output.components(separatedBy: "\n") where !line.isEmpty {
-                let parts = line.split(separator: "|")
-                guard parts.count >= 2 else { continue }
-                let client = String(parts[0])
-                let service = String(parts[1])
-                    .replacingOccurrences(of: "kTCCService", with: "")
-                permissions[client, default: []].append(service)
-            }
-            return permissions
-        } catch {
-            return [:]
+        var permissions: [String: [String]] = [:]
+        for line in output.components(separatedBy: "\n") where !line.isEmpty {
+            let parts = line.split(separator: "|")
+            guard parts.count >= 2 else { continue }
+            let client = String(parts[0])
+            let service = String(parts[1])
+                .replacingOccurrences(of: "kTCCService", with: "")
+            permissions[client, default: []].append(service)
         }
+        return permissions
     }
 
     private func openPrivacySettings() {

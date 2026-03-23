@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct FirewallView: View {
-    @ObservedObject private var firewallService = FirewallService.shared
+    @EnvironmentObject var firewallService: FirewallService
     @State private var showAddRule = false
     @State private var newRuleName = ""
     @State private var newRuleDirection: FirewallRule.Direction = .outbound

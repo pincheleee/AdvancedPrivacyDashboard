@@ -12,13 +12,6 @@ A comprehensive macOS application for real-time privacy monitoring, network anal
 - Historical traffic charts (24h persisted data)
 - Swift Charts visualization
 
-### DNS Monitoring
-- Live DNS query logging from system logs
-- Domain blocklist management with persistence
-- Community blocklist import (AdGuard, Steven Black, Pi-hole)
-- Suspicious domain detection (long names, unusual TLDs)
-- Query statistics and top domains
-
 ### Threat Detection
 - Full system security scanning via ScanService (8 real checks: SIP, Gatekeeper, FileVault, SSH, Firewall, suspicious connections, world-writable paths, screen lock)
 - Real-time threat notifications (scan complete alerts via NotificationManager)
@@ -54,7 +47,7 @@ A comprehensive macOS application for real-time privacy monitoring, network anal
 ### macOS Widget
 - Small widget: security status at a glance
 - Medium widget: network, VPN, firewall, traffic stats
-- Shared data via App Group (WidgetDataWriter publishes to UserDefaults every 30s)
+- Shared data via App Group (event-driven updates via WidgetKit)
 
 ### Settings
 - All settings persisted to SQLite
@@ -100,13 +93,11 @@ AdvancedPrivacyDashboard/
   AdvancedPrivacyDashboard.entitlements
   Models/
     BreachResult.swift
-    DNSQuery.swift
     FirewallRule.swift
     NetworkTrafficData.swift
   Services/
     BlocklistImporter.swift     # Community blocklist import
     BreachCheckService.swift    # HIBP v3 breach checking (k-anonymity)
-    DNSMonitorService.swift     # DNS query monitoring
     ExportService.swift         # CSV/report export
     FirewallService.swift       # macOS firewall integration
     GeoIPService.swift          # IP geolocation (ip-api.com)
@@ -115,14 +106,13 @@ AdvancedPrivacyDashboard/
     NotificationManager.swift   # UNUserNotificationCenter (scan alerts)
     PersistenceManager.swift    # SQLite persistence layer
     ScanService.swift           # 8 real system security checks
-    SystemCommandRunner.swift   # Shell command helper
+    SystemCommandRunner.swift   # Hardened shell command runner (Command enum allowlist)
     UpdateChecker.swift         # GitHub releases update check
     VPNDetector.swift           # VPN interface detection
-    WidgetDataWriter.swift      # App Group shared data (30s interval)
+    WidgetDataWriter.swift      # App Group shared data (event-driven)
   Views/
     BreachCheckView.swift
     ContentView.swift           # Sidebar + keyboard shortcuts
-    DNSMonitoringView.swift
     FirewallView.swift
     NetworkMonitoringView.swift
     OverviewView.swift
@@ -140,6 +130,14 @@ AdvancedPrivacyDashboardWidget/
   Info.plist
   AdvancedPrivacyDashboardWidget.entitlements
 
+Tests/
+  SystemCommandRunnerTests.swift
+  NetworkTrafficHistoryTests.swift
+  ParseNetstatBytesTests.swift
+  ParseLsofOutputTests.swift
+  FirewallRuleTests.swift
+  BreachResultTests.swift
+
 project.yml                     # XcodeGen spec
 Package.swift                   # SPM fallback
 ```
@@ -150,12 +148,15 @@ Package.swift                   # SPM fallback
 |----------|--------|
 | Cmd+1 | Overview |
 | Cmd+2 | Network Monitoring |
-| Cmd+3 | DNS Monitor |
+| Cmd+3 | Connection Map |
 | Cmd+4 | Threat Detection |
 | Cmd+5 | Firewall |
 | Cmd+6 | Privacy Management |
 | Cmd+7 | Breach Check |
-| Cmd+8 | Settings |
+| Cmd+8 | Blocklist |
+| Cmd+9 | Activity Log |
+| Cmd+K | Command Palette |
+| Cmd+/ | Keyboard Shortcuts Help |
 
 ## Development
 
@@ -167,6 +168,51 @@ To regenerate the Xcode project after modifying `project.yml`:
 brew install xcodegen  # if not installed
 xcodegen generate
 ```
+
+## Architecture & Tradeoffs
+
+### Why Shell Commands
+
+The app gathers system state by invoking macOS CLI tools (`netstat`, `lsof`, `socketfilterfw`, etc.) rather than private APIs or kernel extensions. This approach was chosen because:
+
+- **No private APIs** — everything uses publicly available executables shipped with macOS, so there's no risk of App Store rejection or breakage across OS updates.
+- **Broad coverage** — a single `netstat -ib` call returns byte counters for every interface. The equivalent `getifaddrs()` C API requires more code for less clarity.
+- **Transparency** — users can run the exact same commands in Terminal to verify what the app reports.
+
+### Production Alternatives
+
+If the project moves toward the App Store or tighter sandboxing, several calls have framework-level replacements:
+
+| Current command | Framework alternative |
+|---|---|
+| `netstat -ib` | `getifaddrs()` / Network.framework `NWPathMonitor` |
+| `lsof -i` | `NetworkExtension` (`NEFilterDataProvider`) |
+| `socketfilterfw` | `ALF` private API (no public equivalent) |
+| `scutil --dns` | `dns_configuration_copy()` / `NWResolver` |
+| `ifconfig` | `NWInterface` / `getifaddrs()` |
+
+### Command Hardening
+
+All shell execution is funneled through `SystemCommandRunner`, which accepts only a `Command` enum — not raw strings. Each enum case maps to a fixed absolute executable path and argument list, preventing command injection or unexpected binary execution.
+
+### Dependency Injection
+
+Views receive services via `@EnvironmentObject` instead of accessing `X.shared` singletons directly. This makes views testable with mock services and keeps the singleton as a convenience for the composition root in `App.swift`.
+
+### Widget Updates
+
+The widget extension reads shared state from App Group `UserDefaults`. Instead of polling on a timer, the app calls `WidgetCenter.shared.reloadAllTimelines()` after each state change (scan complete, firewall toggle, VPN change), which is more battery-efficient.
+
+### Testing
+
+Tests use the Swift Testing framework (`@Test`, `#expect`). The test suite covers:
+- `SystemCommandRunner.Command` enum path/argument mapping (all 21 cases)
+- `NetworkTrafficHistory` data management (add, max enforcement, clear)
+- `NetworkMonitor.parseNetstatBytes` parsing (en0, loopback skip, dedup)
+- `NetworkService.parseLsofOutput` parsing (established, listen, dedup, limit)
+- `FirewallRule` and `BreachResult` model construction and enum coverage
+
+Run tests: `swift test`
 
 ## License
 

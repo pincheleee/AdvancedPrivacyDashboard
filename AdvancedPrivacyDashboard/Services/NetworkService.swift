@@ -232,26 +232,12 @@ class NetworkService: ObservableObject {
     }
 
     private func fetchRealConnections() -> [NetworkConnection] {
-        let task = Process()
-        let pipe = Pipe()
-        task.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
-        task.arguments = ["-i", "-n", "-P", "+c", "0"]
-        task.standardOutput = pipe
-        task.standardError = FileHandle.nullDevice
-
-        do {
-            try task.run()
-            // C1: Read before wait to prevent pipe buffer deadlock
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            task.waitUntilExit()
-            guard let output = String(data: data, encoding: .utf8) else { return [] }
-            return parseLsofOutput(output)
-        } catch {
-            return []
-        }
+        let output = SystemCommandRunner.runSync(.lsofNetwork)
+        guard !output.isEmpty else { return [] }
+        return parseLsofOutput(output)
     }
 
-    private func parseLsofOutput(_ output: String) -> [NetworkConnection] {
+    func parseLsofOutput(_ output: String) -> [NetworkConnection] {
         var connections: [NetworkConnection] = []
         var seen = Set<String>()
 

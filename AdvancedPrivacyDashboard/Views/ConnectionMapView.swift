@@ -32,9 +32,9 @@ private struct ConnectionMapFallbackView: View {
 
 @available(macOS 14.0, *)
 private struct ConnectionMapView14: View {
-    @ObservedObject private var networkService = NetworkService.shared
-    @ObservedObject private var geoIPService = GeoIPService.shared
-    @ObservedObject private var firewallService = FirewallService.shared
+    @EnvironmentObject var networkService: NetworkService
+    @EnvironmentObject var geoIPService: GeoIPService
+    @EnvironmentObject var firewallService: FirewallService
     @State private var annotations: [ConnectionAnnotation] = []
     @State private var isLoading = false
     @State private var cameraPosition: MapCameraPosition = .automatic

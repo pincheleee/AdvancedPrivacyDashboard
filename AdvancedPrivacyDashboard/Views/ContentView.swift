@@ -2,7 +2,7 @@ import SwiftUI
 
 struct ContentView: View {
     @State private var selectedTab: DashboardTab = .overview
-    @ObservedObject private var vpnDetector = VPNDetector.shared
+    @EnvironmentObject var vpnDetector: VPNDetector
     @State private var showOnboarding = false
     @State private var showCommandPalette = false
     @State private var commandQuery = ""
@@ -49,9 +49,9 @@ struct ContentView: View {
         } // end ZStack
     }
 
-    @ObservedObject private var networkService = NetworkService.shared
-    @ObservedObject private var firewallService = FirewallService.shared
-    @ObservedObject private var scanService = ScanService.shared
+    @EnvironmentObject var networkService: NetworkService
+    @EnvironmentObject var firewallService: FirewallService
+    @EnvironmentObject var scanService: ScanService
 
     private var sidebar: some View {
         VStack(spacing: 0) {
@@ -72,7 +72,6 @@ struct ContentView: View {
                     sidebarRow(for: .overview)
                     sidebarRow(for: .networkMonitoring)
                     sidebarRow(for: .connectionMap)
-                    sidebarRow(for: .dnsMonitoring)
                 }
 
                 Section("Protect") {
@@ -173,26 +172,23 @@ struct ContentView: View {
             Button("") { selectedTab = .connectionMap }
                 .keyboardShortcut("3", modifiers: .command)
                 .hidden()
-            Button("") { selectedTab = .dnsMonitoring }
+            Button("") { selectedTab = .threatDetection }
                 .keyboardShortcut("4", modifiers: .command)
                 .hidden()
-            Button("") { selectedTab = .threatDetection }
+            Button("") { selectedTab = .firewall }
                 .keyboardShortcut("5", modifiers: .command)
                 .hidden()
-            Button("") { selectedTab = .firewall }
+            Button("") { selectedTab = .privacyManagement }
                 .keyboardShortcut("6", modifiers: .command)
                 .hidden()
-            Button("") { selectedTab = .privacyManagement }
+            Button("") { selectedTab = .breachCheck }
                 .keyboardShortcut("7", modifiers: .command)
                 .hidden()
-            Button("") { selectedTab = .breachCheck }
+            Button("") { selectedTab = .blocklist }
                 .keyboardShortcut("8", modifiers: .command)
                 .hidden()
-            Button("") { selectedTab = .blocklist }
-                .keyboardShortcut("9", modifiers: .command)
-                .hidden()
             Button("") { selectedTab = .activityLog }
-                .keyboardShortcut("0", modifiers: .command)
+                .keyboardShortcut("9", modifiers: .command)
                 .hidden()
             Button("") {
                 showCommandPalette.toggle()
@@ -222,7 +218,7 @@ struct ContentView: View {
             // Cmd+Shift+S: run security scan
             Button("") {
                 selectedTab = .threatDetection
-                ScanService.shared.runScan()
+                scanService.runScan()
             }
                 .keyboardShortcut("s", modifiers: [.command, .shift])
                 .hidden()
@@ -248,14 +244,14 @@ struct ContentView: View {
     private func refreshCurrentView() {
         switch selectedTab {
         case .overview, .networkMonitoring:
-            NetworkService.shared.stopMonitoring()
+            networkService.stopMonitoring()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                NetworkService.shared.startMonitoring()
+                self.networkService.startMonitoring()
             }
         case .firewall:
-            FirewallService.shared.refreshStatus()
+            firewallService.refreshStatus()
         case .threatDetection:
-            ScanService.shared.runScan()
+            scanService.runScan()
         default:
             break
         }
@@ -466,11 +462,11 @@ struct CommandPaletteItem: Identifiable {
     let action: () -> Void
 }
 
-enum DashboardTab: String, CaseIterable {
+enum DashboardTab: String, CaseIterable, Identifiable {
+    var id: String { rawValue }
     case overview
     case networkMonitoring
     case connectionMap
-    case dnsMonitoring
     case threatDetection
     case firewall
     case privacyManagement
@@ -484,7 +480,6 @@ enum DashboardTab: String, CaseIterable {
         case .overview: return "Overview"
         case .networkMonitoring: return "Network"
         case .connectionMap: return "Map"
-        case .dnsMonitoring: return "DNS Monitor"
         case .threatDetection: return "Threats"
         case .firewall: return "Firewall"
         case .privacyManagement: return "Privacy"
@@ -500,7 +495,6 @@ enum DashboardTab: String, CaseIterable {
         case .overview: return "shield.lefthalf.filled"
         case .networkMonitoring: return "network"
         case .connectionMap: return "map"
-        case .dnsMonitoring: return "globe.americas"
         case .threatDetection: return "exclamationmark.shield"
         case .firewall: return "flame"
         case .privacyManagement: return "lock.shield"
@@ -520,8 +514,6 @@ enum DashboardTab: String, CaseIterable {
             NetworkMonitoringView()
         case .connectionMap:
             ConnectionMapView()
-        case .dnsMonitoring:
-            DNSMonitoringView()
         case .threatDetection:
             ThreatDetectionView()
         case .firewall:

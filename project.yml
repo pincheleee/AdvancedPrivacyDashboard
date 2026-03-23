@@ -46,6 +46,18 @@ targets:
       - target: AdvancedPrivacyDashboardWidget
         embed: true
 
+  AdvancedPrivacyDashboardTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: Tests
+    dependencies:
+      - target: AdvancedPrivacyDashboard
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.privacydashboard.tests
+        GENERATE_INFOPLIST_FILE: true
+
   AdvancedPrivacyDashboardWidget:
     type: app-extension
     platform: macOS

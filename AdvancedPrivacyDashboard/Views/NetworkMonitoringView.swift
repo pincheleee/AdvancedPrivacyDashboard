@@ -1,10 +1,11 @@
 import SwiftUI
 
 struct NetworkMonitoringView: View {
-    @ObservedObject private var networkService = NetworkService.shared
-    @ObservedObject private var vpnDetector = VPNDetector.shared
-    @ObservedObject private var geoIPService = GeoIPService.shared
-    @ObservedObject private var trustStore = ConnectionTrustStore.shared
+    @EnvironmentObject var networkService: NetworkService
+    @EnvironmentObject var vpnDetector: VPNDetector
+    @EnvironmentObject var geoIPService: GeoIPService
+    @EnvironmentObject var trustStore: ConnectionTrustStore
+    @EnvironmentObject var firewallService: FirewallService
     @State private var selectedTimeRange: TimeRange = .hour
     @State private var securityThreats: [NetworkMonitor.SecurityThreat] = []
     @State private var threatUpdateTimer: Timer?
@@ -93,19 +94,10 @@ struct NetworkMonitoringView: View {
                 }
 
                 // Traffic chart
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("Network Traffic")
-                        .font(.headline)
-
-                    NetworkTrafficChart(
-                        data: networkService.trafficHistory.dataPoints,
-                        timeRange: selectedTimeRange
-                    )
-                    .frame(height: 200)
-                }
-                .padding()
-                .background(RoundedRectangle(cornerRadius: 12)
-                    .fill(Color(NSColor.controlBackgroundColor)))
+                NetworkTrafficChart(
+                    data: networkService.trafficHistory.dataPoints,
+                    timeRange: $selectedTimeRange
+                )
 
                 // Per-app bandwidth breakdown
                 if !networkService.perAppBandwidth.isEmpty {
@@ -278,7 +270,7 @@ struct NetworkMonitoringView: View {
             // Trigger GeoIP batch lookup when connections change
             let ips = networkService.activeConnections.map { $0.destination }
             guard !ips.isEmpty else { return }
-            _ = await GeoIPService.shared.batchLookup(ips)
+            _ = await geoIPService.batchLookup(ips)
         }
     }
 
@@ -365,7 +357,7 @@ struct NetworkMonitoringView: View {
                         isEnabled: true,
                         createdAt: Date()
                     )
-                    FirewallService.shared.addRule(rule)
+                    firewallService.addRule(rule)
                     let ruleToSave = rule
                     Task.detached(priority: .utility) {
                         PersistenceManager.shared.saveFirewallRule(ruleToSave)
@@ -1085,4 +1077,13 @@ enum TimeRange: String, CaseIterable, Identifiable {
     case month = "1 Month"
 
     var id: String { rawValue }
+
+    var shortLabel: String {
+        switch self {
+        case .hour: return "1H"
+        case .day: return "24H"
+        case .week: return "1W"
+        case .month: return "1M"
+        }
+    }
 }

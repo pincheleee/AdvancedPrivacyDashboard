@@ -1,8 +1,22 @@
+# macOS
 .DS_Store
+
+# Build artifacts
 .build/
 build/
+DerivedData/
+
+# Xcode user data
 *.xcuserdata
 xcuserdata/
-DerivedData/
 *.xcworkspace/xcuserdata/
+
+# Swift Package Manager
 .swiftpm/
+
+# Secrets (defensive)
+.env
+.env.*
+*.key
+*.pem
+*.p12

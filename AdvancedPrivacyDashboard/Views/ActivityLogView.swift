@@ -169,7 +169,7 @@ struct ActivityLogView: View {
                         Text("No activity recorded yet")
                             .font(.headline)
                             .foregroundColor(.secondary)
-                        Text("Events from scans, firewall, DNS, and breach checks will appear here.")
+                        Text("Events from scans, firewall, and breach checks will appear here.")
                             .font(.caption)
                             .foregroundColor(.secondary)
                             .multilineTextAlignment(.center)
@@ -217,31 +217,6 @@ struct ActivityLogView: View {
                     pm.logActivity(
                         category: "threat", title: threat.name,
                         detail: threat.description, severity: threat.severity
-                    )
-                }
-
-                let dnsStats = pm.getDNSQueryCount()
-                if dnsStats.blocked > 0 {
-                    let detail = "\(dnsStats.blocked) blocked out of \(dnsStats.total) queries (last 24h)"
-                    allEvents.append(ActivityEvent(
-                        category: .dns, title: "DNS Queries Blocked",
-                        detail: detail, timestamp: Date().formatted(),
-                        severity: dnsStats.blocked > 10 ? .medium : .low
-                    ))
-                    pm.logActivity(
-                        category: "dns", title: "DNS Queries Blocked",
-                        detail: detail, severity: dnsStats.blocked > 10 ? "medium" : "low"
-                    )
-                }
-                if dnsStats.suspicious > 0 {
-                    let detail = "\(dnsStats.suspicious) suspicious domains detected"
-                    allEvents.append(ActivityEvent(
-                        category: .dns, title: "Suspicious DNS Queries",
-                        detail: detail, timestamp: Date().formatted(), severity: .medium
-                    ))
-                    pm.logActivity(
-                        category: "dns", title: "Suspicious DNS Queries",
-                        detail: detail, severity: "medium"
                     )
                 }
 
@@ -310,12 +285,11 @@ struct ActivityLogView: View {
 // MARK: - Supporting Types
 
 enum ActivityCategory: String, CaseIterable {
-    case threat, dns, firewall, breach, network
+    case threat, firewall, breach, network
 
     var displayName: String {
         switch self {
         case .threat: return "Threats"
-        case .dns: return "DNS"
         case .firewall: return "Firewall"
         case .breach: return "Breaches"
         case .network: return "Network"
@@ -325,7 +299,6 @@ enum ActivityCategory: String, CaseIterable {
     var icon: String {
         switch self {
         case .threat: return "exclamationmark.shield"
-        case .dns: return "globe.americas"
         case .firewall: return "flame"
         case .breach: return "magnifyingglass"
         case .network: return "network"
@@ -335,7 +308,6 @@ enum ActivityCategory: String, CaseIterable {
     var color: Color {
         switch self {
         case .threat: return .red
-        case .dns: return .purple
         case .firewall: return .orange
         case .breach: return .blue
         case .network: return .green

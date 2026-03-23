@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct BlocklistManagementView: View {
-    @ObservedObject private var importer = BlocklistImporter()
+    @EnvironmentObject var importer: BlocklistImporter
     @State private var blocklist: Set<String> = []
     @State private var searchText = ""
     @State private var newDomain = ""

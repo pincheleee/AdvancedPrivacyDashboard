@@ -19,14 +19,15 @@ struct SettingsView: View {
     @State private var dnsAlertsEnabled = true
 
     // Update checker
-    @ObservedObject private var updateChecker = UpdateChecker.shared
-    @ObservedObject private var notificationManager = NotificationManager.shared
+    @EnvironmentObject var updateChecker: UpdateChecker
+    @EnvironmentObject var notificationManager: NotificationManager
 
     // Clear data confirmation
     @State private var showClearDataConfirmation = false
 
     // Scheduled export
-    @ObservedObject private var exportService = ExportService.shared
+    @EnvironmentObject var exportService: ExportService
+    @EnvironmentObject var firewallService: FirewallService
 
     var body: some View {
         VStack(spacing: 0) {
@@ -135,7 +136,7 @@ struct SettingsView: View {
         }
 
         // Load notification category toggles
-        let nm = NotificationManager.shared
+        let nm = notificationManager
         threatAlertsEnabled = nm.isEnabledForCategory(.threat)
         breachAlertsEnabled = nm.isEnabledForCategory(.breach)
         privacyAlertsEnabled = nm.isEnabledForCategory(.privacy)
@@ -234,27 +235,27 @@ struct SettingsView: View {
                 if notificationsEnabled {
                     Toggle("Threat Alerts", isOn: $threatAlertsEnabled)
                         .onChange(of: threatAlertsEnabled) { newValue in
-                            NotificationManager.shared.setEnabled(newValue, for: .threat)
+                            notificationManager.setEnabled(newValue, for: .threat)
                         }
 
                     Toggle("Breach Alerts", isOn: $breachAlertsEnabled)
                         .onChange(of: breachAlertsEnabled) { newValue in
-                            NotificationManager.shared.setEnabled(newValue, for: .breach)
+                            notificationManager.setEnabled(newValue, for: .breach)
                         }
 
                     Toggle("Privacy Violations", isOn: $privacyAlertsEnabled)
                         .onChange(of: privacyAlertsEnabled) { newValue in
-                            NotificationManager.shared.setEnabled(newValue, for: .privacy)
+                            notificationManager.setEnabled(newValue, for: .privacy)
                         }
 
                     Toggle("Network Alerts", isOn: $networkAlertsEnabled)
                         .onChange(of: networkAlertsEnabled) { newValue in
-                            NotificationManager.shared.setEnabled(newValue, for: .network)
+                            notificationManager.setEnabled(newValue, for: .network)
                         }
 
                     Toggle("DNS Alerts", isOn: $dnsAlertsEnabled)
                         .onChange(of: dnsAlertsEnabled) { newValue in
-                            NotificationManager.shared.setEnabled(newValue, for: .dns)
+                            notificationManager.setEnabled(newValue, for: .dns)
                         }
                 }
             }
@@ -303,8 +304,8 @@ struct SettingsView: View {
 
             SettingsGroup(title: "Threat Response") {
                 Toggle("Auto-block on Critical Threat", isOn: Binding(
-                    get: { FirewallService.shared.autoBlockEnabled },
-                    set: { FirewallService.shared.setAutoBlock($0) }
+                    get: { firewallService.autoBlockEnabled },
+                    set: { firewallService.setAutoBlock($0) }
                 ))
                 Text("Automatically create a firewall deny rule when a critical threat is detected (suspicious IP, malware connection, etc.)")
                     .font(.caption)
