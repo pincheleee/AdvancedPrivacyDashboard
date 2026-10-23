@@ -2,6 +2,14 @@
 
 A comprehensive macOS application for real-time privacy monitoring, network analysis, threat detection, and security management.
 
+## Project Status
+
+- Status: stable
+- Last major update: 2026-03-22
+- Current focus: keeping the macOS dashboard, widget, and security integrations in a shippable state
+- Run: `swift build`
+- Next step: preserve build health and tighten polish around the existing feature set
+
 ## Features
 
 ### Network Monitoring
